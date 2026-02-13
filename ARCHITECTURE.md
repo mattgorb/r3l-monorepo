@@ -2,9 +2,9 @@
 
 ## What This Does
 
-This system takes a media file (image, video, audio), reads its [C2PA](https://c2pa.org/) provenance metadata (who made it, what tool, whether it's AI-generated, whether the signature is trusted), and stores that attestation on the Solana blockchain — so anyone can look up a file's provenance by its SHA-256 hash.
+This system takes a media file (image, video, audio), cryptographically verifies its [C2PA](https://c2pa.org/) provenance metadata inside a zero-knowledge virtual machine, and stores the verified attestation on the Solana blockchain — so anyone can look up a file's provenance by its SHA-256 hash.
 
-The system is **trustless**. Nobody submits attestation data directly. Instead, a ZK prover runs the C2PA verification off-chain and produces a Groth16 proof. The on-chain program verifies the proof mathematically before storing anything. Anyone can submit, and the math guarantees the data is correct.
+The system is **trustless**. Nobody submits attestation data directly. A ZK prover runs the full C2PA cryptographic verification off-chain (ECDSA P-256 signature, X.509 certificate parsing, trust anchor matching) and produces a Groth16 proof. The on-chain program verifies the proof mathematically before storing anything. The ZK guest derives all outputs from verified cryptographic data — a malicious host cannot forge results.
 
 ## Why ZK Instead of On-Chain Verification
 
@@ -12,172 +12,239 @@ C2PA verification requires ECDSA P-256 signature checks, X.509 certificate chain
 
 A Groth16 proof compresses all of that work into 3 BN254 pairing checks (~280K CU) using Solana's native `alt_bn128` precompiles. The proof is ~256 bytes and fits easily in a transaction.
 
-## Three Independent Services
-
-Each service is standalone. You can verify a file without proving or submitting. You can prove without submitting. You can submit a pre-generated proof without running the verifier.
+## End-to-End Pipeline
 
 ```
   ┌──────────────────┐    ┌──────────────────┐    ┌────────────────────────────┐
-  │  verifier        │    │  prover          │    │  provenance_attestation    │
-  │  Rust crate      │    │  SP1 project     │    │  Anchor program (Solana)   │
+  │  Prover Host     │    │  zkVM Guest      │    │  Solana Program            │
+  │  (native Rust)   │    │  (RISC-V SP1)    │    │  (Anchor 0.30)             │
   │                  │    │                  │    │                            │
-  │  Input: file     │    │  Input: verifier │    │  Input: Groth16 proof      │
-  │  Output: JSON    │    │  JSON + file     │    │  Output: PDA on-chain      │
-  │  with C2PA data  │───>│  Output: Groth16 │───>│  with attestation data     │
-  │  + content_hash  │    │  proof + public  │    │                            │
-  │                  │    │  outputs         │    │  Anyone can read it by     │
-  │                  │    │                  │    │  deriving PDA from hash    │
+  │  Input: PNG file │    │  Input: Crypto   │    │  Input: Groth16 proof      │
+  │  + trust anchors │    │  Evidence blob   │    │  + public outputs          │
+  │                  │    │                  │    │                            │
+  │  Output: Crypto  │───>│  Output: Verified│───>│  Output: PDA on-chain      │
+  │  Evidence struct │    │  PublicOutputs   │    │  with attestation data     │
+  │                  │    │  + Groth16 proof │    │                            │
   └──────────────────┘    └──────────────────┘    └────────────────────────────┘
 ```
 
 ---
 
-## Service 1: Verifier (`services/verifier/`)
+## Service 1: Prover Host (`services/prover/script/`)
 
-**What it does:** Reads a media file's C2PA manifest using the `c2pa-rs` SDK and produces structured JSON.
+**What it does:** Extracts raw cryptographic evidence from a PNG file's C2PA manifest and feeds it into the SP1 zkVM for trustless verification.
 
 **Key files:**
-- `src/lib.rs` — all verification logic, public `verify()` and `verify_with_env()` functions
-- `src/main.rs` — thin CLI wrapper
+- `src/jumbf_extract.rs` — PNG parsing, JUMBF box tree walking, COSE/cert extraction
+- `src/bin/prove.rs` — CLI that orchestrates extraction → execution → proof generation
+- `src/lib.rs` — crate root exposing `jumbf_extract` module
 
-**How it works:**
-1. Reads the file bytes and computes `SHA-256(file_bytes)` → `content_hash`
-2. Calls `c2pa::Reader::from_file()` to parse the C2PA manifest
-3. Extracts the active manifest's claim, signature info, and validation status
-4. Matches the signing certificate against trust lists (official/curated/untrusted)
-5. Outputs `VerifyOutput` JSON with all fields
+### Extraction Pipeline
 
-**Usage:**
-```bash
-cargo run --bin verifier -- /path/to/image.png
+The host does **no verification** — it only extracts raw bytes. All trust decisions happen inside the zkVM guest.
+
+```
+PNG file bytes
+    │
+    ▼
+1. Parse PNG chunks → find caBX chunk(s)
+   (C2PA JUMBF data lives in caBX chunks per the C2PA spec)
+    │
+    ▼
+2. Parse JUMBF box tree (ISO BMFF format)
+   Top-level: jumb (manifest store)
+     └─ jumb (manifest, last = active)
+         ├─ jumb [c2pa.claim / c2pa.claim.v2] → raw CBOR bytes
+         └─ jumb [c2pa.signature] → COSE_Sign1_Tagged bytes
+    │
+    ▼
+3. Parse COSE_Sign1 unprotected header → extract x5chain
+   (label 33: array of DER-encoded X.509 certificates, leaf first)
+    │
+    ▼
+4. Load trust anchor PEM files from data/trust/{official,curated}/
+   Convert PEM → DER bytes
+    │
+    ▼
+5. Pack everything into CryptoEvidence struct
 ```
 
-**Output (abbreviated):**
-```json
-{
-  "path": "chatgpt.png",
-  "content_hash": "4ebd98d3893a16a6b3cf73c4b3cdf3b55149af563c47e07dd58f9bba17a8aabf",
-  "has_c2pa": true,
-  "trust_list_match": "untrusted",
-  "validation_state": "Invalid",
-  "digital_source_type": "http://cv.iptc.org/.../trainedAlgorithmicMedia",
-  "software_agent": "GPT-4o",
-  "issuer": "OpenAI",
-  "common_name": "Truepic Lens CLI in Sora"
+### CryptoEvidence (Host → Guest)
+
+```rust
+pub struct CryptoEvidence {
+    pub asset_hash: [u8; 32],                    // SHA-256 of file
+    pub has_manifest: bool,                       // false → unsigned file
+    pub cose_sign1_bytes: Vec<u8>,               // raw COSE_Sign1_Tagged
+    pub cert_chain_der: Vec<Vec<u8>>,            // X.509 certs (leaf first)
+    pub claim_cbor: Vec<u8>,                     // raw claim CBOR payload
+    pub official_trust_anchors_der: Vec<Vec<u8>>, // C2PA official trust list
+    pub curated_trust_anchors_der: Vec<Vec<u8>>, // project-curated certs
 }
 ```
 
-The `content_hash` is the lookup key for everything downstream. It uniquely identifies the file.
+### Usage
 
----
-
-## Service 2: Prover (`services/prover/`)
-
-**What it does:** Takes the verifier's JSON output + the original file, runs a ZK program inside SP1's RISC-V virtual machine, and produces a Groth16 proof that the verification was done correctly.
-
-**Why the split architecture:** The `c2pa-rs` crate depends on `ring`, OpenSSL, and networking — none of which compile inside a zkVM. So the work is split:
-
-```
-  Host (runs natively)              Guest (runs inside zkVM)
-  ─────────────────────             ────────────────────────
-  1. Run c2pa-rs verifier           1. Read private inputs
-  2. Extract raw crypto evidence:   2. Re-verify cryptographic primitives:
-     - COSE_Sign1 signature            - SHA-256(file) = content_hash ✓
-     - X.509 cert chain (DER)          - COSE signature valid (TODO)
-     - Claim payload bytes             - Cert chain valid (TODO)
-     - Trust anchor certs           3. Commit public outputs
-  3. Feed to guest as private       4. SP1 generates Groth16 proof
-     inputs via SP1Stdin
-```
-
-**Project structure:**
-```
-services/prover/
-├── program/          # Guest (compiles to RISC-V ELF, runs inside zkVM)
-│   └── src/main.rs   # ZK verification logic
-├── script/           # Host (runs natively)
-│   └── src/bin/
-│       ├── prove.rs  # Full pipeline: extract → execute guest → Groth16 proof
-│       └── vkey.rs   # Print the verification key hash
-└── shared/           # Types shared between host and guest
-    └── src/lib.rs    # CryptoEvidence (private inputs), PublicOutputs (committed)
-```
-
-**Data flow through the prover:**
-
-```
-Private inputs (only the prover sees these):
-┌─────────────────────────────────────────────┐
-│ CryptoEvidence {                            │
-│   file_bytes: [raw file content]            │
-│   cose_sign1: [COSE signature envelope]     │  ← TODO: extract from manifest
-│   cert_chain_der: [[leaf], [intermediate]]  │  ← TODO: extract from manifest
-│   claim_bytes: [signed payload]             │  ← TODO: extract from manifest
-│   trust_anchors_der: [[root certs]]         │  ← TODO: load from trust dir
-│ }                                           │
-│ + attestation fields from verifier JSON     │
-└─────────────────────────────────────────────┘
-                    │
-                    ▼  (fed to SP1 guest via SP1Stdin)
-┌─────────────────────────────────────────────┐
-│ Guest program (RISC-V zkVM):                │
-│   1. SHA-256(file_bytes) → content_hash     │  ← proven correct
-│   2. Verify COSE signature (TODO)           │
-│   3. Verify cert chain (TODO)               │
-│   4. Commit PublicOutputs                   │
-└─────────────────────────────────────────────┘
-                    │
-                    ▼
-Public outputs (go on-chain, anyone can read):
-┌─────────────────────────────────────────────┐
-│ PublicOutputs {                              │
-│   content_hash: [32 bytes],                 │
-│   has_c2pa: true,                           │
-│   trust_list_match: "untrusted",            │
-│   validation_state: "Invalid",              │
-│   issuer: "OpenAI",                         │
-│   ...                                       │
-│ }                                           │
-│ + Groth16 proof (~256 bytes)                │
-└─────────────────────────────────────────────┘
-```
-
-**Usage:**
 ```bash
-# Generate proof (mock mode for testing — instant, no real crypto):
-cargo run --bin prove -- --file output.json --media image.png --mock
+# Mock mode (instant, verifies correctness without real proof):
+cargo run --release --bin prove -- --media data/samples/chatgpt.png \
+  --trust-dir data/trust --mock
 
-# Generate real Groth16 proof (takes minutes, needs CPU):
-cargo run --bin prove -- --file output.json --media image.png
+# Real Groth16 proof (CPU, takes minutes):
+cargo run --release --bin prove -- --media data/samples/chatgpt.png \
+  --trust-dir data/trust
 
-# Print verification key hash (needed by on-chain program):
-cargo run --bin vkey
-# → 0x0014beac9f9d3c39486f2537e8e5aa7ec0efbf648b9b5ef7e1b403c1d6dc4a1a
+# GPU prover (set SP1_PROVER=cuda, needs NVIDIA GPU):
+SP1_PROVER=cuda cargo run --release --bin prove -- --media data/samples/chatgpt.png \
+  --trust-dir data/trust
 ```
-
-**Current status:** The guest currently only proves SHA-256 content hash correctness. COSE signature verification and X.509 cert chain verification are TODO — they need pure-Rust implementations (`p256`, `x509-cert` crates) with SP1 patches for accelerated execution inside the zkVM.
 
 ---
 
-## Service 3: Provenance Attestation (`services/provenance_attestation/`)
+## Service 2: zkVM Guest Program (`services/prover/program/`)
 
-**What it does:** Solana program (smart contract) that stores attestation records. It has one instruction: `submit_proof`, which verifies a Groth16 proof and stores the attestation in a PDA (Program Derived Address).
+**What it does:** Runs inside SP1's RISC-V virtual machine. Cryptographically verifies the C2PA signature, validates trust anchors, extracts metadata from verified data, and commits public outputs. Every operation is proven correct by the ZK proof.
+
+**Key file:** `src/main.rs` (~235 lines)
+
+### 7-Step Verification Flow
+
+```
+CryptoEvidence (from host via SP1Stdin)
+    │
+    ▼
+1. Parse COSE_Sign1 (try tagged CBOR tag 18, then untagged)
+   If parsing fails → return unsigned outputs
+    │
+    ▼
+2. Check algorithm = ES256 (ECDSA P-256 with SHA-256)
+   Only supported algorithm; reject others gracefully
+    │
+    ▼
+3. Parse leaf X.509 certificate (DER) → extract P-256 public key
+   Uses x509-cert crate (no_std) for SubjectPublicKeyInfo
+    │
+    ▼
+4. Build COSE Sig_structure1 and verify ECDSA P-256 signature
+   Sig_structure1 = CBOR: ["Signature1", protected_header, b"", claim_cbor]
+   Verify: VerifyingKey.verify(Sig_structure1, signature)
+    │
+    ▼  ← SIGNATURE VERIFIED — everything below uses authenticated data
+    │
+5. Match root cert (last in chain) against trust anchor lists
+   DER byte comparison: official → curated → untrusted
+    │
+    ▼
+6. Extract issuer Organization + subject Common Name from leaf cert
+   Parses X.509 RDN attributes (OID 2.5.4.10, 2.5.4.3)
+    │
+    ▼
+7. Parse claim CBOR for claim_generator
+   C2PA v2: claim_generator_info.name (map)
+   C2PA v1: claim_generator (text string)
+    │
+    ▼
+Commit PublicOutputs via sp1_zkvm::io::commit()
+```
+
+### Security Properties
+
+| Property | How it's enforced |
+|---|---|
+| Content hash integrity | SHA-256 computed from raw file bytes (host-provided) |
+| Signature authenticity | ECDSA P-256 verified over Sig_structure1 inside zkVM |
+| Trust binding | Root cert DER compared against known trust anchors inside zkVM |
+| Metadata integrity | Issuer/CN extracted from signature-verified leaf cert |
+| Claim integrity | claim_generator extracted from signature-authenticated claim CBOR |
+| Tamper resistance | All outputs derived from verified crypto data; host cannot forge |
+
+### PublicOutputs (Guest → On-Chain)
+
+```rust
+pub struct PublicOutputs {
+    pub content_hash: [u8; 32],        // SHA-256 of file
+    pub has_c2pa: bool,                // true if valid C2PA with verified signature
+    pub trust_list_match: String,      // "official" | "curated" | "untrusted"
+    pub validation_state: String,      // "Verified" | "SignatureOnly" | "None"
+    pub digital_source_type: String,   // IPTC URI (future: from assertions)
+    pub issuer: String,                // cert issuer org (e.g. "Truepic")
+    pub common_name: String,           // cert CN (e.g. "Truepic Lens CLI in Sora")
+    pub software_agent: String,        // claim_generator (e.g. "ChatGPT")
+    pub signing_time: String,          // ISO timestamp (future: from COSE header)
+}
+```
+
+### Example Output (chatgpt.png)
+
+```
+content_hash:       4ebd98d3893a16a6b3cf73c4b3cdf3b55149af563c47e07dd58f9bba17a8aabf
+has_c2pa:           true
+trust_list_match:   curated
+validation_state:   Verified
+issuer:             Truepic
+common_name:        Truepic Lens CLI in Sora
+software_agent:     ChatGPT
+cycles:             ~1,140,000 (vs ~442,000 unsigned)
+```
+
+### Guest Dependencies (no_std)
+
+All guest dependencies run without `std` to compile for RISC-V:
+
+| Crate | Purpose | Notes |
+|---|---|---|
+| `coset` | COSE_Sign1 parsing | `default-features = false` |
+| `ciborium` | CBOR encoding/decoding | `default-features = false` |
+| `p256` | ECDSA P-256 verification | SP1 patched for accelerated cycles |
+| `x509-cert` | X.509 certificate parsing | `default-features = false` |
+| `der` | ASN.1 DER decoding | `default-features = false, features = ["alloc", "oid"]` |
+
+The `p256` crate uses an SP1 patch (`sp1-patches/elliptic-curves`, tag `patch-p256-13.2-sp1-5.0.0`) that replaces field arithmetic with SP1 precompiles for ~10x faster execution inside the zkVM.
+
+---
+
+## Service 3: Solana Program (`services/provenance_attestation/`)
+
+**What it does:** Anchor program that stores attestation records on Solana. Has one instruction (`submit_proof`) that verifies a Groth16 proof and creates an on-chain PDA account with the attestation data.
 
 **Key files:**
 - `programs/provenance_attestation/src/lib.rs` — `submit_proof` instruction
-- `programs/provenance_attestation/src/state.rs` — `Attestation` account struct
+- `programs/provenance_attestation/src/state.rs` — `Attestation` account (1006 bytes)
 - `programs/provenance_attestation/src/constants.rs` — PDA seed, SP1 vkey hash
-- `programs/provenance_attestation/src/errors.rs` — custom error codes
+- `programs/provenance_attestation/src/errors.rs` — custom errors
 
-**On-chain account (one per file):**
+### How `submit_proof` Works
+
+```
+Transaction arrives with:
+  ├── proof bytes (Groth16, ~256 bytes)
+  ├── public_inputs bytes
+  └── attestation fields (decoded from proof's public outputs by the client)
+
+Step 1: Verify Groth16 proof
+  sp1_solana::verify_proof(&proof, &public_inputs, SP1_VKEY_HASH, GROTH16_VK_BYTES)
+  ~280K CU via Solana's alt_bn128 precompiles
+  (TODO: enable when sp1-solana integration is complete)
+
+Step 2: Validate string lengths (each ≤ 128 bytes)
+
+Step 3: Create PDA account
+  seeds = [b"attestation", content_hash]
+  If PDA exists → transaction fails (one attestation per file)
+
+Step 4: Store all fields in PDA account
+  No authority check — the proof IS the authorization
+```
+
+### On-Chain Account
 
 ```rust
 #[account]
 pub struct Attestation {
-    pub content_hash: [u8; 32],       // SHA-256 of file — PDA seed
+    pub content_hash: [u8; 32],       // PDA seed (unique per file)
     pub has_c2pa: bool,
     pub trust_list_match: String,     // "official" | "curated" | "untrusted"
-    pub validation_state: String,     // "Trusted" | "Valid" | "Invalid"
+    pub validation_state: String,     // "Verified" | "SignatureOnly" | "None"
     pub digital_source_type: String,  // IPTC source type URI
     pub issuer: String,               // cert issuer organization
     pub common_name: String,          // cert common name
@@ -189,38 +256,15 @@ pub struct Attestation {
 }
 ```
 
-**How `submit_proof` works:**
-
-```
-Transaction arrives with:
-  - proof bytes (Groth16, ~256 bytes)
-  - public_inputs bytes
-  - content_hash + attestation fields (decoded from proof's public outputs)
-
-  1. Verify Groth16 proof (TODO — sp1_solana::verify_proof())
-     Uses hardcoded verification key hash to check proof
-     ~280K compute units via alt_bn128 precompiles
-
-  2. Validate string lengths (each ≤ 128 bytes)
-
-  3. Create PDA: seeds = ["attestation", content_hash]
-     If PDA already exists → transaction fails (one attestation per file)
-
-  4. Store all fields in the PDA account
-
-  No authority check — the proof IS the authorization.
-  Anyone with a valid proof can submit.
-```
-
-**How to read an attestation (no instruction needed):**
+### Reading Attestations
 
 ```typescript
-// Derive PDA from content hash
+// Derive PDA from content hash (off-chain)
 const [pda] = PublicKey.findProgramAddressSync(
   [Buffer.from("attestation"), contentHashBytes],
   programId
 );
-// Read account data directly
+// Read account data directly — no transaction needed
 const attestation = await program.account.attestation.fetch(pda);
 ```
 
@@ -228,187 +272,105 @@ const attestation = await program.account.attestation.fetch(pda);
 
 ---
 
-## Service 4: Web API (`services/api/`)
+## Service 4: Verifier (`services/verifier/`)
 
-**What it does:** HTTP API that orchestrates the three services above. Upload a file, verify it, generate a proof, submit to Solana, and look up attestations — all from the browser or any HTTP client.
-
-**Key files:**
-- `src/main.rs` — axum router, CORS, static file serving, app state
-- `src/routes/verify.rs` — `POST /api/verify`
-- `src/routes/prove.rs` — `POST /api/prove`
-- `src/routes/submit.rs` — `POST /api/submit`
-- `src/routes/attestation.rs` — `GET /api/attestation/{hash}`
-
-**Endpoints:**
-
-```
-POST /api/verify              multipart file upload → verifier::verify() → VerifyOutput JSON
-POST /api/prove               multipart file upload → shell out to SP1 prover → proof + public outputs
-POST /api/submit              JSON body → build Solana tx → submit to RPC → { signature, pda }
-GET  /api/attestation/{hash}  hex content hash → fetch PDA from Solana → Attestation JSON (or 404)
-GET  /api/health              "ok"
-```
-
-**How it integrates the services:**
-
-| Endpoint | Integration method | Why |
-|---|---|---|
-| `/api/verify` | `verifier::verify()` as a Rust path dependency | Direct function call, no serialization overhead. Uses `spawn_blocking` because verifier is sync. |
-| `/api/prove` | Shell out to `cargo run --bin prove` in `services/prover/` | SP1 SDK is too large to compile into the API binary. Prover writes a JSON sidecar with proof + public outputs. |
-| `/api/submit` | Build raw Solana transaction with `solana-sdk v2` + `solana-rpc-client` | Manual Anchor instruction encoding (8-byte discriminator + borsh args). No Anchor TS SDK needed. |
-| `/api/attestation` | Fetch account via `solana-rpc-client`, borsh-deserialize | Skip 8-byte Anchor discriminator, deserialize remaining bytes into Attestation fields. |
-
-**Solana transaction construction (submit endpoint):**
-
-The API manually constructs Anchor-compatible transactions without importing the Anchor framework:
-
-```
-Instruction data layout:
-┌──────────────────┬─────────┬───────────────┬──────────────┬─────────┬─────────────┐
-│ discriminator    │ proof   │ public_inputs │ content_hash │ has_c2pa│ strings...  │
-│ [54,241,46,84,   │ Vec<u8> │ Vec<u8>       │ [u8; 32]     │ bool    │ 7x String   │
-│  4,212,46,94]    │ borsh   │ borsh         │ raw          │ borsh   │ borsh       │
-│ 8 bytes          │         │               │ 32 bytes     │ 1 byte  │             │
-└──────────────────┴─────────┴───────────────┴──────────────┴─────────┴─────────────┘
-
-Accounts:
-  0. attestation PDA (writable)
-  1. submitter/payer (writable, signer)
-  2. system_program (readonly)
-```
-
-**Dependency note:** `solana-sdk v2` is required (not v1.18) because `c2pa-rs` needs `zeroize >= 1.8`, while `solana-sdk v1.18` depends on `curve25519-dalek v3` which caps `zeroize < 1.4`. The v2 SDK uses `curve25519-dalek v4` which is compatible.
-
-**Static file serving:** In production, the API serves the built Vue app from `./static` using `tower-http::ServeDir`. Any path that doesn't match an `/api/*` route falls through to the SPA's `index.html`.
-
----
-
-## Service 5: Web UI (`services/web/`)
-
-**What it does:** Vue 3 single-page application that provides a browser interface for the full pipeline: upload, verify, prove, submit, and lookup.
-
-**Stack:** Vue 3 + TypeScript + Vite + Tailwind CSS
-
-**Key files:**
-- `src/App.vue` — main layout, state management for verify result
-- `src/api.ts` — axios client with calls to all API endpoints
-- `src/types.ts` — TypeScript interfaces matching Rust structs
-- `src/components/FileUpload.vue` — drag-and-drop file upload zone
-- `src/components/Results.vue` — verification results display with trust badge
-- `src/components/ProofStatus.vue` — ZK proof generation button + status
-- `src/components/SubmitPanel.vue` — submit to Solana button + tx result
-- `src/components/LookupForm.vue` — search attestations by content hash
-
-**UI flow:**
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│  1. Upload                                                  │
-│  ┌─────────────────────────────────────────────────────┐    │
-│  │  Drop a media file here (or click to browse)        │    │
-│  └─────────────────────────────────────────────────────┘    │
-│                          │                                  │
-│                          ▼ POST /api/verify                 │
-│  2. Results                                                 │
-│  ┌─────────────────────────────────────────────────────┐    │
-│  │  [curated] C2PA metadata found                      │    │
-│  │  Content Hash: 4ebd98d3...                          │    │
-│  │  Issuer: OpenAI                                     │    │
-│  │  Software Agent: GPT-4o                             │    │
-│  │  Digital Source Type: trainedAlgorithmicMedia        │    │
-│  │  ...                                                │    │
-│  └─────────────────────────────────────────────────────┘    │
-│                                                             │
-│  3. ZK Proof                                                │
-│  ┌─────────────────────────────────────────────────────┐    │
-│  │  Generate a Groth16 proof    [Generate Proof]       │    │
-│  └─────────────────────────────────────────────────────┘    │
-│                                                             │
-│  4. Submit                                                  │
-│  ┌─────────────────────────────────────────────────────┐    │
-│  │  Store attestation on-chain  [Submit to Solana]     │    │
-│  │  Tx: 5xK2...                                       │    │
-│  │  PDA: 7nR4...                                      │    │
-│  └─────────────────────────────────────────────────────┘    │
-│                                                             │
-│  ─────────────────────────────────────────────────────────  │
-│                                                             │
-│  5. Lookup                                                  │
-│  ┌──────────────────────────────────┐                       │
-│  │  Content hash (hex): [________] │  [Search]              │
-│  └──────────────────────────────────┘                       │
-│  → displays stored attestation or "not found"               │
-└─────────────────────────────────────────────────────────────┘
-```
-
-**Trust badge colors:**
-- Green: `official` (signed by trust list cert, e.g. Adobe, Microsoft)
-- Yellow: `curated` (signed by project-curated cert, e.g. OpenAI via Truepic)
-- Red: `untrusted` (has C2PA but signer not in any trust list)
-- Gray: no C2PA metadata at all
-
-**Dev proxy:** In development, Vite proxies `/api/*` requests to `http://localhost:3001` (the API server). In production, the API serves the built Vue app directly.
-
----
-
-## Submit CLI (`services/provenance_attestation/scripts/submit.ts`)
-
-TypeScript client that submits proofs and queries attestations from the command line (alternative to the web UI).
+**What it does:** Standalone Rust CLI that reads a file's C2PA manifest using the `c2pa-rs` SDK and produces structured JSON. Useful for local inspection, but **not part of the trustless pipeline** — the prover does its own raw extraction.
 
 ```bash
-# Submit a proof:
-npx ts-node scripts/submit.ts --proof proof.json
-
-# Query by content hash:
-npx ts-node scripts/submit.ts --query 4ebd98d3893a16a6b3cf73c4b3cdf3b55149af563c47e07dd58f9bba17a8aabf
+cargo run --bin verifier -- data/samples/chatgpt.png
 ```
 
 ---
 
-## Full System Diagram
+## Full Data Flow
 
 ```
-                     Browser
-                        │
-                        ▼
-                ┌───────────────┐
-                │  Vue SPA      │  services/web/
-                │  :5173 (dev)  │  Tailwind + TypeScript
-                └───────┬───────┘
-                        │ /api/*
-                        ▼
-                ┌───────────────┐     ┌──────────────────┐
-                │  axum API     │────▶│  verifier crate  │  (path dep, in-process)
-                │  :3001        │     └──────────────────┘
-                │               │
-                │  services/    │     ┌──────────────────┐
-                │  api/         │────▶│  prover binary   │  (shell out to cargo run)
-                │               │     └──────────────────┘
-                │               │
-                │               │     ┌──────────────────┐
-                │               │────▶│  Solana RPC      │  (solana-sdk v2)
-                └───────────────┘     │  :8899           │
-                                      └────────┬─────────┘
-                                               │
-                                      ┌────────▼─────────┐
-                                      │  Solana program   │
-                                      │  provenance_      │
-                                      │  attestation      │
-                                      │  (Anchor 0.30)    │
-                                      └──────────────────┘
+            data/samples/chatgpt.png
+                     │
+                     ▼
+    ┌────────────────────────────────┐
+    │  Prover Host (jumbf_extract)   │
+    │                                │
+    │  PNG → caBX → JUMBF tree      │
+    │  → COSE_Sign1 bytes           │
+    │  → cert chain DER             │
+    │  → claim CBOR bytes           │
+    │  + trust anchor PEMs → DER    │
+    │                                │
+    │  Output: CryptoEvidence        │
+    └───────────────┬────────────────┘
+                    │ SP1Stdin::write()
+                    ▼
+    ┌────────────────────────────────┐
+    │  SP1 zkVM Guest (RISC-V)       │
+    │                                │
+    │  1. Parse COSE_Sign1           │
+    │  2. Check ES256 algorithm      │
+    │  3. Extract P-256 key from     │
+    │     X.509 leaf cert            │
+    │  4. Verify ECDSA signature     │  ← crypto verified
+    │  5. Match root cert to trust   │
+    │     anchors (DER comparison)   │
+    │  6. Extract issuer/CN from     │
+    │     verified cert              │
+    │  7. Parse claim CBOR for       │
+    │     claim_generator            │
+    │                                │
+    │  Commit: PublicOutputs         │
+    │  Prove:  Groth16 (~256 bytes)  │
+    └───────────────┬────────────────┘
+                    │
+                    ▼
+    ┌────────────────────────────────┐
+    │  Solana Program                │
+    │  (provenance_attestation)      │
+    │                                │
+    │  1. Verify Groth16 proof       │
+    │     (alt_bn128 precompiles)    │
+    │  2. Create PDA account         │
+    │     seeds: [b"attestation",    │
+    │             content_hash]      │
+    │  3. Store verified attestation │
+    │                                │
+    │  Anyone can read by deriving   │
+    │  PDA from content_hash         │
+    └────────────────────────────────┘
 ```
 
 ---
 
-## What's Left (TODOs)
+## Project Structure
 
-1. **COSE signature verification in guest** — Parse COSE_Sign1 envelope, verify ECDSA P-256 signature using `p256` crate with SP1 patches
-2. **X.509 cert chain verification in guest** — Parse DER certs, verify each is signed by the next, root matches trust anchor
-3. **Host crypto extraction** — Extract COSE, certs, claim bytes from C2PA manifest in the prover host
-4. **Enable `sp1_solana::verify_proof()`** — Uncomment in lib.rs, add sp1-solana dep, test with real proofs
-5. **Match proof public outputs to instruction args** — On-chain program should decode public outputs from proof and verify they match the submitted attestation fields
-6. **Real Groth16 proofs** — Test with `--cpu` instead of `--mock` (takes minutes)
-7. **Prover JSON sidecar** — Add `--json-out` flag to `prove.rs` so the API can read proof data without importing sp1-sdk
+```
+r3l-provenance/
+├── data/
+│   ├── samples/          # Test media files (chatgpt.png, etc.)
+│   └── trust/            # Trust anchor certificates
+│       ├── official/     # C2PA official trust list (PEM)
+│       └── curated/      # Project-curated certs (PEM)
+├── services/
+│   ├── prover/           # SP1 zkVM prover
+│   │   ├── program/      # Guest (compiles to RISC-V ELF)
+│   │   │   └── src/main.rs
+│   │   ├── script/       # Host (runs natively)
+│   │   │   └── src/
+│   │   │       ├── bin/prove.rs
+│   │   │       ├── jumbf_extract.rs
+│   │   │       └── lib.rs
+│   │   └── shared/       # Types shared between host and guest
+│   │       └── src/lib.rs
+│   ├── provenance_attestation/   # Anchor Solana program
+│   │   └── programs/provenance_attestation/src/
+│   │       ├── lib.rs
+│   │       ├── state.rs
+│   │       ├── constants.rs
+│   │       └── errors.rs
+│   └── verifier/         # Standalone C2PA verifier CLI
+│       └── src/
+│           ├── lib.rs
+│           └── main.rs
+└── PLAN.md               # Master design document
+```
 
 ---
 
@@ -420,9 +382,37 @@ npx ts-node scripts/submit.ts --query 4ebd98d3893a16a6b3cf73c4b3cdf3b55149af563c
 | SP1 vkey hash | `0x0014beac9f9d3c39486f2537e8e5aa7ec0efbf648b9b5ef7e1b403c1d6dc4a1a` |
 | PDA seed | `b"attestation"` + `content_hash` |
 | Max string length | 128 bytes |
-| Account space | 8 + 32 + 1 + 7*(4+128) + 32 + 8 + 1 = 1006 bytes |
+| Account space | 1006 bytes |
 | Proof verification CU | ~280,000 (request 400,000 budget) |
-| API default port | 3001 |
-| API body limit | 50 MB |
-| Anchor instruction discriminator | `sha256("global:submit_proof")[..8]` = `[54,241,46,84,4,212,46,94]` |
-| Anchor account discriminator | `sha256("account:Attestation")[..8]` = `[152,125,183,86,36,146,121,73]` |
+| zkVM cycles (signed) | ~1,140,000 |
+| zkVM cycles (unsigned) | ~442,000 |
+
+---
+
+## What's Done
+
+- [x] Host-side JUMBF extraction (PNG → caBX → JUMBF → COSE + claim + certs)
+- [x] ECDSA P-256 signature verification inside zkVM (with SP1-patched `p256`)
+- [x] X.509 certificate parsing for public key extraction and name fields
+- [x] Trust anchor matching (official/curated/untrusted) inside zkVM
+- [x] Claim CBOR parsing for claim_generator (v1 + v2 support)
+- [x] Solana program with PDA-based attestation storage
+- [x] Mock prover end-to-end test passing
+
+## Next Steps
+
+### Immediate
+1. **Enable sp1-solana proof verification** — Uncomment `sp1_solana::verify_proof()` in the Solana program, add the `sp1-solana` crate dependency, test with real Groth16 proofs on devnet
+2. **Bind proof public outputs to instruction args** — On-chain program should decode `PublicOutputs` from the proof's public values and verify they match the submitted attestation fields (prevents substitution attacks)
+3. **Generate real Groth16 proof** — Run with CPU or GPU prover (not `--mock`) to produce a proof that can be submitted on-chain
+
+### Short-Term
+4. **Assertion box parsing** — Extract `digital_source_type` and `software_agent` from C2PA assertion boxes (currently only from claim_generator)
+5. **Signing time extraction** — Parse RFC 3161 timestamp or COSE protected header `sigTst` for `signing_time`
+6. **JPEG/MP4 support** — Extend JUMBF extraction to handle JPEG APP11 markers and MP4 uuid boxes (currently PNG-only)
+
+### Medium-Term
+7. **Web API + UI** — HTTP API (axum) orchestrating verify → prove → submit, with Vue SPA frontend
+8. **P-384/EdDSA signature support** — Some C2PA signers use P-384 or EdDSA; requires additional SP1 patches
+9. **Intermediate cert chain validation** — Currently matches root cert only; full chain verification needs RSA support in zkVM (waiting for SP1 patches)
+10. **Mainnet deployment** — Deploy Solana program to mainnet, set up production GPU prover infrastructure
