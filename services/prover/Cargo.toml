@@ -1,0 +1,7 @@
+[workspace]
+members = ["script", "shared"]
+exclude = ["program"]
+resolver = "2"
+
+[patch.crates-io]
+alloy-consensus = { git = "https://github.com/alloy-rs/alloy", tag = "v0.15.0" }

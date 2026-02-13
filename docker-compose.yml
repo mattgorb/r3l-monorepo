@@ -1,0 +1,39 @@
+services:
+  verifier-dev:
+    build:
+      context: .
+      dockerfile: docker/dev.Dockerfile
+    working_dir: /workspace/services/verifier
+    environment:
+      TRUST_DIR: /workspace/data/trust
+    volumes:
+      - ./:/workspace
+      - verifier-target:/workspace/services/verifier/target
+    command: bash -c "cargo run -- ../../data/samples/a.png"
+    # ^ replace the path with whatever file you want to test
+
+  verifier:
+    build:
+      context: .
+      dockerfile: docker/verifier.Dockerfile
+    volumes:
+      - ./data:/data:ro
+    # Run with: docker compose run --rm verifier /data/samples/example.jpg
+
+  api:
+    build:
+      context: .
+      dockerfile: docker/api.Dockerfile
+    ports:
+      - "3001:3001"
+    environment:
+      TRUST_DIR: /data/trust
+      SOLANA_RPC_URL: http://host.docker.internal:8899
+      SOLANA_KEYPAIR_PATH: /keys/id.json
+    volumes:
+      - ./data:/data:ro
+      - ~/.config/solana:/keys:ro
+    # Start with: docker compose up api
+
+volumes:
+  verifier-target:

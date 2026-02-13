@@ -1,0 +1,25 @@
+[package]
+name = "provenance-program"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+sp1-zkvm = "5.0.0"
+sha2 = "0.10"
+serde = { version = "1", features = ["derive"] }
+prover-shared = { path = "../shared" }
+
+# COSE / CBOR parsing (no_std for zkVM)
+coset = { version = "0.3", default-features = false }
+ciborium = { version = "0.2", default-features = false }
+
+# ECDSA P-256 signature verification
+p256 = { version = "0.13", default-features = false, features = ["ecdsa"] }
+
+# X.509 certificate parsing (no_std + alloc)
+x509-cert = { version = "0.2", default-features = false }
+der = { version = "0.7", default-features = false, features = ["alloc", "oid"] }
+
+[patch.crates-io]
+sha2 = { git = "https://github.com/sp1-patches/RustCrypto-hashes", package = "sha2", tag = "patch-sha2-0.10.8-sp1-4.0.0" }
+p256 = { git = "https://github.com/sp1-patches/elliptic-curves", package = "p256", tag = "patch-p256-13.2-sp1-5.0.0" }

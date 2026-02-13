@@ -1,0 +1,41 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:www.anchor-lang.com)",
+      "WebFetch(domain:docs.succinct.xyz)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:stevedylan.dev)",
+      "Bash(TRUST_DIR=./data/trust cargo run:*)",
+      "Bash(curl:*)",
+      "Bash(python3:*)",
+      "Bash(export PATH=\"$HOME/.sp1/bin:$PATH\")",
+      "Bash(cargo build:*)",
+      "Bash(cargo install:*)",
+      "Bash(avm:*)",
+      "Bash(anchor:*)",
+      "Bash(cargo run:*)",
+      "Bash(npm install:*)",
+      "Bash(rustc:*)",
+      "Bash(rustup show:*)",
+      "Bash(solana --version:*)",
+      "Bash(export PATH:*)",
+      "Bash(cargo-build-sbf:*)",
+      "Bash(cargo tree:*)",
+      "Bash(cargo update:*)",
+      "Bash(solana address:*)",
+      "Bash(RUST_LOG=anchor=debug anchor test:*)",
+      "Bash(export ANCHOR_PROVIDER_URL=\"http://localhost:8899\")",
+      "Bash(export ANCHOR_WALLET:*)",
+      "Bash(npx mocha:*)",
+      "Bash(pkill:*)",
+      "Bash(xxd:*)",
+      "Bash(cargo check:*)",
+      "Bash(npx vue-tsc:*)",
+      "Bash(npx vite build:*)",
+      "Bash(TRUST_DIR=../../data/trust cargo run:*)",
+      "Bash(kill:*)",
+      "Bash(grep:*)",
+      "Bash(cargo clean:*)"
+    ]
+  }
+}

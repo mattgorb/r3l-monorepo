@@ -1,0 +1,18 @@
+[toolchain]
+
+[features]
+resolution = true
+skip-lint = false
+
+[programs.localnet]
+provenance_attestation = "HahVgC9uo73aLw1ouBEvgMT7KmGTS6rovfbKP9zuCtjc"
+
+[registry]
+url = "https://api.apr.dev"
+
+[provider]
+cluster = "Localnet"
+wallet = "~/.config/solana/id.json"
+
+[scripts]
+test = "npx mocha --timeout 60000 tests/**/*.ts"

@@ -1,0 +1,23 @@
+[package]
+name = "provenance-attestation"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "lib"]
+name = "provenance_attestation"
+
+[features]
+default = []
+cpi = ["no-entrypoint"]
+no-entrypoint = []
+no-idl = []
+no-log-ix-name = []
+idl-build = ["anchor-lang/idl-build"]
+
+[dependencies]
+anchor-lang = "0.30"
+blake3 = { workspace = true }
+hex = "0.4"
+# TODO: uncomment when ready for on-chain proof verification
+# sp1-solana = { git = "https://github.com/succinctlabs/sp1-solana" }

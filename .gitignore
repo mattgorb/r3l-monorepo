@@ -1,0 +1,7 @@
+target/
+node_modules/
+*.bin
+.env
+proof.bin
+verify.json
+data/fixtures/
