@@ -15,6 +15,8 @@ pub struct CryptoEvidence {
     pub cert_chain_der: Vec<Vec<u8>>,
     /// Raw CBOR claim payload bytes (from the c2pa.claim box, detached payload)
     pub claim_cbor: Vec<u8>,
+    /// Assertion boxes from the manifest: Vec of (label, raw CBOR bytes)
+    pub assertion_boxes: Vec<(String, Vec<u8>)>,
     /// Official trust anchor certificates (DER-encoded)
     pub official_trust_anchors_der: Vec<Vec<u8>>,
     /// Curated trust anchor certificates (DER-encoded)
@@ -44,4 +46,6 @@ pub struct PublicOutputs {
     pub software_agent: String,
     /// ISO timestamp of signature (from COSE protected header, if present)
     pub signing_time: String,
+    /// SHA-256 fingerprint of the leaf signing certificate (hex-encoded)
+    pub cert_fingerprint: String,
 }

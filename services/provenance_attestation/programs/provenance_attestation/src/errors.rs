@@ -8,4 +8,6 @@ pub enum ProvenanceError {
     InvalidPublicOutputs,
     #[msg("String field exceeds maximum length")]
     StringTooLong,
+    #[msg("Content hash does not match proof public outputs")]
+    ContentHashMismatch,
 }

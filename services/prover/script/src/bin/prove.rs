@@ -25,6 +25,10 @@ struct Args {
     /// Use mock prover for testing (no real proof generation)
     #[arg(long)]
     mock: bool,
+
+    /// Write JSON sidecar with proof and public_values hex
+    #[arg(long)]
+    json_out: Option<String>,
 }
 
 fn main() -> Result<()> {
@@ -47,15 +51,15 @@ fn main() -> Result<()> {
     // Create prover client and run
     if args.mock {
         let client = ProverClient::builder().mock().build();
-        run_prover(client, ELF, stdin, &args.output)?;
+        run_prover(client, ELF, stdin, &args.output, args.json_out.as_deref())?;
     } else if std::env::var("SP1_PROVER").unwrap_or_default() == "cuda" {
         println!("Using CUDA GPU prover (set via SP1_PROVER=cuda)");
         let client = ProverClient::builder().cuda().build();
-        run_prover(client, ELF, stdin, &args.output)?;
+        run_prover(client, ELF, stdin, &args.output, args.json_out.as_deref())?;
     } else {
         println!("Using CPU prover (set SP1_PROVER=cuda for GPU)");
         let client = ProverClient::builder().cpu().build();
-        run_prover(client, ELF, stdin, &args.output)?;
+        run_prover(client, ELF, stdin, &args.output, args.json_out.as_deref())?;
     };
 
     Ok(())
@@ -66,6 +70,7 @@ fn run_prover(
     elf: &[u8],
     stdin: SP1Stdin,
     output_path: &str,
+    json_out: Option<&str>,
 ) -> Result<()> {
     let (pk, vk) = client.setup(elf);
     println!("vkey hash: {}", vk.bytes32());
@@ -85,6 +90,7 @@ fn run_prover(
     println!("software_agent: {}", outputs.software_agent);
     println!("digital_source_type: {}", outputs.digital_source_type);
     println!("signing_time: {}", outputs.signing_time);
+    println!("cert_fingerprint: {}", outputs.cert_fingerprint);
 
     // Generate Groth16 proof
     println!("generating Groth16 proof...");
@@ -104,6 +110,16 @@ fn run_prover(
     let public_values_bytes = proof.public_values.as_slice();
     println!("proof bytes: {} bytes", proof_bytes.len());
     println!("public values: {} bytes", public_values_bytes.len());
+
+    // Write JSON sidecar if requested
+    if let Some(json_path) = json_out {
+        let sidecar = serde_json::json!({
+            "proof": hex::encode(&proof_bytes),
+            "public_values": hex::encode(public_values_bytes),
+        });
+        std::fs::write(json_path, serde_json::to_string_pretty(&sidecar)?)?;
+        println!("JSON sidecar written to {}", json_path);
+    }
 
     Ok(())
 }

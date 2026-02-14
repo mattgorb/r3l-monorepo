@@ -5,7 +5,7 @@ resolution = true
 skip-lint = false
 
 [programs.localnet]
-provenance_attestation = "HahVgC9uo73aLw1ouBEvgMT7KmGTS6rovfbKP9zuCtjc"
+provenance_attestation = "kK63ncGUJXCWjUqSYzcN92tW531rt4UtacJBmHWXJ16"
 
 [registry]
 url = "https://api.apr.dev"

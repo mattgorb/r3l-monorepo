@@ -19,16 +19,8 @@ export async function proveFile(file: File): Promise<ProveResponse> {
 
 export async function submitAttestation(params: {
   content_hash: string
-  has_c2pa: boolean
-  trust_list_match: string
-  validation_state: string
-  digital_source_type: string
-  issuer: string
-  common_name: string
-  software_agent: string
-  signing_time: string
-  proof?: string
-  public_inputs?: string
+  proof: string
+  public_inputs: string
 }): Promise<SubmitResponse> {
   const { data } = await client.post<SubmitResponse>('/submit', params)
   return data

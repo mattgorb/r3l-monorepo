@@ -29,18 +29,8 @@ const SUBMIT_PROOF_DISCRIMINATOR: [u8; 8] = [54, 241, 46, 84, 4, 212, 46, 94];
 #[derive(Deserialize)]
 pub struct SubmitRequest {
     pub content_hash: String,
-    pub has_c2pa: bool,
-    pub trust_list_match: String,
-    pub validation_state: String,
-    pub digital_source_type: String,
-    pub issuer: String,
-    pub common_name: String,
-    pub software_agent: String,
-    pub signing_time: String,
-    #[serde(default)]
-    pub proof: Option<String>,
-    #[serde(default)]
-    pub public_inputs: Option<String>,
+    pub proof: String,
+    pub public_inputs: String,
 }
 
 #[derive(Serialize)]
@@ -50,17 +40,13 @@ pub struct SubmitResponse {
 }
 
 /// Borsh-serialize the submit_proof instruction data.
-/// Layout: discriminator + proof + public_inputs + content_hash + has_c2pa + strings...
+/// Layout: discriminator + proof (Vec<u8>) + public_inputs (Vec<u8>) + content_hash ([u8; 32])
 fn encode_instruction_data(req: &SubmitRequest, content_hash: &[u8; 32]) -> Vec<u8> {
     let mut data = Vec::new();
     data.extend_from_slice(&SUBMIT_PROOF_DISCRIMINATOR);
 
-    let proof_bytes = req.proof.as_deref()
-        .and_then(|s| hex::decode(s).ok())
-        .unwrap_or_default();
-    let public_inputs_bytes = req.public_inputs.as_deref()
-        .and_then(|s| hex::decode(s).ok())
-        .unwrap_or_default();
+    let proof_bytes = hex::decode(&req.proof).unwrap_or_default();
+    let public_inputs_bytes = hex::decode(&req.public_inputs).unwrap_or_default();
 
     // Vec<u8> — 4-byte LE length + bytes
     BorshSerialize::serialize(&proof_bytes, &mut data).unwrap();
@@ -68,18 +54,6 @@ fn encode_instruction_data(req: &SubmitRequest, content_hash: &[u8; 32]) -> Vec<
 
     // [u8; 32] — fixed 32 bytes
     data.extend_from_slice(content_hash);
-
-    // bool — 1 byte
-    BorshSerialize::serialize(&req.has_c2pa, &mut data).unwrap();
-
-    // Strings — 4-byte LE length + UTF-8 bytes
-    BorshSerialize::serialize(&req.trust_list_match, &mut data).unwrap();
-    BorshSerialize::serialize(&req.validation_state, &mut data).unwrap();
-    BorshSerialize::serialize(&req.digital_source_type, &mut data).unwrap();
-    BorshSerialize::serialize(&req.issuer, &mut data).unwrap();
-    BorshSerialize::serialize(&req.common_name, &mut data).unwrap();
-    BorshSerialize::serialize(&req.software_agent, &mut data).unwrap();
-    BorshSerialize::serialize(&req.signing_time, &mut data).unwrap();
 
     data
 }

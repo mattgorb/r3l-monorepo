@@ -5,3 +5,6 @@ node_modules/
 proof.bin
 verify.json
 data/fixtures/
+test-ledger/
+.DS_Store
+.anchor/

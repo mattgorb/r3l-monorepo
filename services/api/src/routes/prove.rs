@@ -67,13 +67,19 @@ pub async fn prove(
 
     // Shell out to the prover binary
     let prover_dir = state.prover_dir.clone();
+    let trust_dir = state.trust_dir.clone();
+    let mut prover_args = vec![
+        "run", "--bin", "prove", "--",
+        "--media", &tmp_path,
+        "--trust-dir", &trust_dir,
+        "--json-out", &sidecar_path,
+    ];
+    let use_mock = std::env::var("PROVER_MOCK").unwrap_or_else(|_| "true".to_string()) != "false";
+    if use_mock {
+        prover_args.push("--mock");
+    }
     let output = tokio::process::Command::new("cargo")
-        .args([
-            "run", "--bin", "prove", "--",
-            "--file", &tmp_path,
-            "--mock",
-            "--json-out", &sidecar_path,
-        ])
+        .args(&prover_args)
         .current_dir(&prover_dir)
         .output()
         .await
@@ -96,7 +102,7 @@ pub async fn prove(
 
     Ok(Json(ProveResponse {
         proof: sidecar_json["proof"].as_str().unwrap_or("").to_string(),
-        public_outputs: sidecar_json["public_outputs"].as_str().unwrap_or("").to_string(),
+        public_outputs: sidecar_json["public_values"].as_str().unwrap_or("").to_string(),
         verify_output: verify_json,
     }))
 }

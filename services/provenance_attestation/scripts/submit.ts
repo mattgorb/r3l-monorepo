@@ -22,6 +22,7 @@ interface ProofOutput {
     common_name: string;
     software_agent: string;
     signing_time: string;
+    cert_fingerprint: string;
   };
 }
 
@@ -109,15 +110,7 @@ async function submitProof(
     .submitProof(
       Buffer.from(proofData.proof),
       Buffer.from(proofData.public_values),
-      Array.from(contentHash),
-      public_outputs.has_c2pa,
-      public_outputs.trust_list_match,
-      public_outputs.validation_state,
-      public_outputs.digital_source_type,
-      public_outputs.issuer,
-      public_outputs.common_name,
-      public_outputs.software_agent,
-      public_outputs.signing_time
+      Array.from(contentHash)
     )
     .accounts({
       attestation: attestationPda,
@@ -172,6 +165,7 @@ async function queryAttestation(program: Program, contentHashHex: string) {
       common_name: attestation.commonName,
       software_agent: attestation.softwareAgent,
       signing_time: attestation.signingTime,
+      cert_fingerprint: attestation.certFingerprint,
       submitted_by: attestation.submittedBy.toBase58(),
       timestamp: attestation.timestamp.toNumber(),
     }, null, 2));

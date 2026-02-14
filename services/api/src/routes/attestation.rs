@@ -30,6 +30,7 @@ struct AttestationAccount {
     common_name: String,
     software_agent: String,
     signing_time: String,
+    cert_fingerprint: String,
     submitted_by: [u8; 32], // Pubkey as raw bytes
     timestamp: i64,
     #[allow(dead_code)]
@@ -47,6 +48,7 @@ pub struct AttestationResponse {
     pub common_name: String,
     pub software_agent: String,
     pub signing_time: String,
+    pub cert_fingerprint: String,
     pub submitted_by: String,
     pub timestamp: i64,
 }
@@ -88,7 +90,8 @@ pub async fn lookup(
             return Ok(None);
         }
 
-        let attestation = AttestationAccount::try_from_slice(&data[8..])
+        let mut cursor = std::io::Cursor::new(&data[8..]);
+        let attestation = AttestationAccount::deserialize_reader(&mut cursor)
             .map_err(|e| anyhow::anyhow!("deserialize: {e}"))?;
         Ok(Some(attestation))
     })
@@ -107,6 +110,7 @@ pub async fn lookup(
             common_name: att.common_name,
             software_agent: att.software_agent,
             signing_time: att.signing_time,
+            cert_fingerprint: att.cert_fingerprint,
             submitted_by: Pubkey::from(att.submitted_by).to_string(),
             timestamp: att.timestamp,
         })),

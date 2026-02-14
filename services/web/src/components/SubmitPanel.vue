@@ -20,16 +20,8 @@ async function submit() {
   try {
     const resp = await submitAttestation({
       content_hash: props.result.content_hash!,
-      has_c2pa: props.result.has_c2pa,
-      trust_list_match: props.result.trust_list_match || '',
-      validation_state: props.result.validation_state || '',
-      digital_source_type: props.result.digital_source_type || '',
-      issuer: props.result.issuer || '',
-      common_name: props.result.common_name || '',
-      software_agent: props.result.software_agent || '',
-      signing_time: props.result.signing_time || '',
-      proof: props.proof || undefined,
-      public_inputs: props.publicInputs || undefined,
+      proof: props.proof || '',
+      public_inputs: props.publicInputs || '',
     })
     signature.value = resp.signature
     pda.value = resp.attestation_pda

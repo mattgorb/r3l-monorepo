@@ -22,6 +22,8 @@ pub struct Attestation {
     pub software_agent: String,
     /// ISO timestamp of signature
     pub signing_time: String,
+    /// SHA-256 fingerprint of the leaf signing certificate (hex)
+    pub cert_fingerprint: String,
     /// Who submitted the transaction
     pub submitted_by: Pubkey,
     /// Solana clock timestamp
@@ -36,7 +38,7 @@ impl Attestation {
 
     /// Space needed for the account:
     /// 8 (discriminator) + 32 (content_hash) + 1 (has_c2pa) +
-    /// 7 * (4 + MAX_STRING_LEN) (strings with length prefix) +
+    /// 8 * (4 + MAX_STRING_LEN) (strings with length prefix) +
     /// 32 (submitted_by) + 8 (timestamp) + 1 (bump)
-    pub const SPACE: usize = 8 + 32 + 1 + 7 * (4 + Self::MAX_STRING_LEN) + 32 + 8 + 1;
+    pub const SPACE: usize = 8 + 32 + 1 + 8 * (4 + Self::MAX_STRING_LEN) + 32 + 8 + 1;
 }

@@ -571,6 +571,7 @@ dependencies = [
  "ciborium",
  "coset",
  "der",
+ "hex",
  "p256",
  "prover-shared",
  "serde",

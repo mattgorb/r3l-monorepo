@@ -5,6 +5,7 @@ use coset::{CborSerializable, CoseSign1, TaggedCborSerializable};
 use der::Decode;
 use p256::ecdsa::{signature::Verifier, Signature, VerifyingKey};
 use prover_shared::{CryptoEvidence, PublicOutputs};
+use sha2::{Digest, Sha256};
 use x509_cert::Certificate;
 
 pub fn main() {
@@ -31,6 +32,7 @@ fn unsigned_outputs(content_hash: [u8; 32]) -> PublicOutputs {
         common_name: String::new(),
         software_agent: String::new(),
         signing_time: String::new(),
+        cert_fingerprint: String::new(),
     }
 }
 
@@ -125,16 +127,24 @@ fn verify_and_extract(evidence: &CryptoEvidence) -> PublicOutputs {
     // 7. Extract claim_generator from verified claim CBOR
     let software_agent = extract_claim_generator(&evidence.claim_cbor);
 
+    // 8. Extract digitalSourceType and signing time from assertion boxes
+    let (digital_source_type, signing_time) =
+        extract_from_actions(&evidence.assertion_boxes);
+
+    // 9. Compute SHA-256 fingerprint of the leaf signing certificate
+    let cert_fingerprint = hex::encode(Sha256::digest(&evidence.cert_chain_der[0]));
+
     PublicOutputs {
         content_hash: evidence.asset_hash,
         has_c2pa: true,
         trust_list_match,
         validation_state,
-        digital_source_type: String::new(), // requires assertion box parsing (future)
+        digital_source_type,
         issuer,
         common_name,
         software_agent,
-        signing_time: String::new(), // requires RFC 3161 parsing (future)
+        signing_time,
+        cert_fingerprint,
     }
 }
 
@@ -231,4 +241,75 @@ fn extract_claim_generator(claim_cbor: &[u8]) -> String {
         .and_then(|(_, v)| v.as_text())
         .unwrap_or("")
         .to_string()
+}
+
+/// Extract digitalSourceType and signing time from C2PA actions assertion.
+/// Looks for "c2pa.actions" or "c2pa.actions.v2" assertion boxes.
+/// Actions CBOR has: { "actions": [{ "action": "...", "digitalSourceType": "...", "when": "..." }] }
+fn extract_from_actions(assertion_boxes: &[(String, Vec<u8>)]) -> (String, String) {
+    for (label, data) in assertion_boxes {
+        if !label.starts_with("c2pa.actions") {
+            continue;
+        }
+
+        let cbor: ciborium::Value = match ciborium::de::from_reader(data.as_slice()) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+
+        let map = match cbor.as_map() {
+            Some(m) => m,
+            None => continue,
+        };
+
+        // Find "actions" array
+        let actions = match map
+            .iter()
+            .find(|(k, _)| k.as_text() == Some("actions"))
+            .and_then(|(_, v)| v.as_array())
+        {
+            Some(a) => a,
+            None => continue,
+        };
+
+        let mut source_type = String::new();
+        let mut when = String::new();
+
+        for action in actions {
+            let action_map = match action.as_map() {
+                Some(m) => m,
+                None => continue,
+            };
+
+            if source_type.is_empty() {
+                if let Some(dst) = action_map
+                    .iter()
+                    .find(|(k, _)| k.as_text() == Some("digitalSourceType"))
+                    .and_then(|(_, v)| v.as_text())
+                {
+                    source_type = dst.to_string();
+                }
+            }
+
+            if when.is_empty() {
+                if let Some(t) = action_map
+                    .iter()
+                    .find(|(k, _)| k.as_text() == Some("when"))
+                    .and_then(|(_, v)| v.as_text())
+                {
+                    when = t.to_string();
+                }
+            }
+
+            if !source_type.is_empty() && !when.is_empty() {
+                break;
+            }
+        }
+
+        if !source_type.is_empty() || !when.is_empty() {
+            return (source_type, when);
+        }
+    }
+
+    (String::new(), String::new())
 }
