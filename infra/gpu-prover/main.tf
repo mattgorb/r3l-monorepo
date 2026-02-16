@@ -16,7 +16,7 @@ terraform {
 # Variables (no edits required)
 ############################
 variable "aws_region"    { default = "us-east-1" }
-variable "instance_type" { default = "g5.xlarge" }  # 24GB A10G GPU
+variable "instance_type" { default = "g5.2xlarge" }  # 24GB A10G GPU
 variable "name_prefix"   { default = "penult-embed" }  # Keep for existing key
 variable "project_name"  { default = "sp1-prover" }    # Project-specific naming
 

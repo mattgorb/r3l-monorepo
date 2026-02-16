@@ -8,7 +8,7 @@ use constants::{ATTESTATION_SEED, SP1_VKEY_HASH};
 use errors::ProvenanceError;
 use state::Attestation;
 
-declare_id!("kK63ncGUJXCWjUqSYzcN92tW531rt4UtacJBmHWXJ16");
+declare_id!("6VoF5vTQfCSVUMqbpxw8Z8YjvzPEmgkYD6477kyN6eNw");
 
 #[program]
 pub mod provenance_attestation {

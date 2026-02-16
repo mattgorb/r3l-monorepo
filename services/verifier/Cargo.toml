@@ -11,4 +11,4 @@ serde_json = "1"
 sha2 = "0.10"
 
 # C2PA Rust SDK
-c2pa = { version = "0.75", features = ["file_io"] }
+c2pa = { version = "0.75", features = ["file_io", "pdf"] }

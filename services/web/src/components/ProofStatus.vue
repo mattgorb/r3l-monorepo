@@ -10,18 +10,30 @@ const emit = defineEmits<{
 const loading = ref(false)
 const error = ref<string | null>(null)
 const done = ref(false)
-const proofPreview = ref('')
+
+// Clean up API error messages
+function cleanError(raw: string): string {
+  const cleaned = raw
+    .replace(/--- stdout ---\n?/g, '')
+    .replace(/--- stderr ---\n?/g, '')
+    .trim()
+  const lines = cleaned.split('\n').filter(l => l.trim())
+  if (lines.length > 3) {
+    return lines.slice(0, 3).join('\n')
+  }
+  return cleaned
+}
 
 async function generate() {
   loading.value = true
   error.value = null
   try {
     const result = await proveFile(props.file)
-    proofPreview.value = result.proof.slice(0, 64) + '...'
     emit('proved', result.proof, result.public_outputs)
     done.value = true
   } catch (e: any) {
-    error.value = e.response?.data || e.message
+    const raw = e.response?.data || e.message || 'Unknown error'
+    error.value = cleanError(typeof raw === 'string' ? raw : JSON.stringify(raw))
   } finally {
     loading.value = false
   }
@@ -29,7 +41,7 @@ async function generate() {
 </script>
 
 <template>
-  <div class="bg-gray-900 rounded-lg border border-gray-800 p-4">
+  <div>
     <div class="flex items-center justify-between">
       <div>
         <h3 class="font-medium text-sm">ZK Proof</h3>
@@ -43,9 +55,8 @@ async function generate() {
       >
         {{ loading ? 'Generating...' : 'Generate Proof' }}
       </button>
-      <span v-else class="text-green-400 text-sm">Done</span>
+      <span v-else class="text-green-400 text-sm font-medium">Done</span>
     </div>
-    <p v-if="done" class="mt-2 text-xs text-gray-500 font-mono break-all">{{ proofPreview }}</p>
-    <p v-if="error" class="mt-2 text-red-400 text-xs">{{ error }}</p>
+    <p v-if="error" class="mt-2 text-red-400 text-xs whitespace-pre-line">{{ error }}</p>
   </div>
 </template>

@@ -1,9 +1,10 @@
-//! Extract C2PA cryptographic evidence from media files (PNG, JPEG, MP4).
+//! Extract C2PA cryptographic evidence from media files (PNG, JPEG, MP4, PDF).
 //!
 //! Supported formats:
 //!   PNG  — caBX chunk(s) contain raw JUMBF data
 //!   JPEG — APP11 (0xFFEB) marker segments per ISO 19566-5 (JUMBF-in-JPEG)
 //!   MP4  — top-level BMFF `uuid` box with C2PA UUID
+//!   PDF  — Associated File with /AFRelationship /C2PA_Manifest (ISO 32000-2)
 //!
 //! Pipeline: media → JUMBF → box tree → claim CBOR + COSE_Sign1 +
 //! assertion boxes, then extract certificate chain from COSE unprotected header.
@@ -28,6 +29,8 @@ pub fn extract_crypto_evidence(media_path: &str, trust_dir: &str) -> Result<Cryp
         ("JPEG", extract_c2pa_from_jpeg(&file_bytes))
     } else if is_bmff(&file_bytes) {
         ("MP4/BMFF", extract_c2pa_from_bmff(&file_bytes))
+    } else if file_bytes.starts_with(b"%PDF-") {
+        ("PDF", extract_c2pa_from_pdf(&file_bytes))
     } else {
         ("unknown", None)
     };
@@ -308,6 +311,145 @@ fn extract_c2pa_from_bmff(data: &[u8]) -> Option<Vec<u8>> {
     }
 
     None
+}
+
+// ---------------------------------------------------------------------------
+// PDF C2PA extraction (ISO 32000-2 Associated Files)
+// ---------------------------------------------------------------------------
+
+/// Extract C2PA JUMBF data from a PDF document.
+///
+/// Per C2PA spec Appendix A.4, JUMBF is stored as an embedded file stream
+/// referenced by a FileSpec dictionary with `/AFRelationship /C2PA_Manifest`.
+/// The FileSpec is linked from the Catalog's `/AF` array, or alternatively
+/// from a FileAttachment annotation on the first page.
+fn extract_c2pa_from_pdf(data: &[u8]) -> Option<Vec<u8>> {
+    use lopdf::Document;
+
+    let doc = Document::load_mem(data).ok()?;
+
+    // Try Catalog → /AF array first
+    if let Some(jumbf) = extract_c2pa_from_pdf_catalog(&doc) {
+        return Some(jumbf);
+    }
+
+    // Fallback: check page 1 annotations for FileAttachment
+    extract_c2pa_from_pdf_annotations(&doc)
+}
+
+/// Search the Catalog's /AF array for a C2PA manifest FileSpec.
+fn extract_c2pa_from_pdf_catalog(doc: &lopdf::Document) -> Option<Vec<u8>> {
+    let catalog = doc.catalog().ok()?;
+    let af = catalog.get(b"AF").ok()?;
+
+    // Resolve indirect reference if needed
+    let af_obj = if let lopdf::Object::Reference(r) = af {
+        doc.get_object(*r).ok()?
+    } else {
+        af
+    };
+
+    let af_array = af_obj.as_array().ok()?;
+
+    for entry in af_array {
+        let file_spec_obj = match entry {
+            lopdf::Object::Reference(r) => doc.get_object(*r).ok()?,
+            other => other,
+        };
+        if let Some(jumbf) = try_extract_c2pa_from_filespec(doc, file_spec_obj) {
+            return Some(jumbf);
+        }
+    }
+
+    None
+}
+
+/// Search page 1 annotations for a FileAttachment referencing a C2PA manifest.
+fn extract_c2pa_from_pdf_annotations(doc: &lopdf::Document) -> Option<Vec<u8>> {
+    let pages = doc.get_pages();
+    // Get the first page
+    let first_page_id = pages.get(&1)?;
+    let page = doc.get_object(*first_page_id).ok()?;
+    let page_dict = page.as_dict().ok()?;
+
+    let annots = page_dict.get(b"Annots").ok()?;
+    let annots_obj = if let lopdf::Object::Reference(r) = annots {
+        doc.get_object(*r).ok()?
+    } else {
+        annots
+    };
+    let annots_array = annots_obj.as_array().ok()?;
+
+    for annot_ref in annots_array {
+        let annot_obj = match annot_ref {
+            lopdf::Object::Reference(r) => doc.get_object(*r).ok()?,
+            other => other,
+        };
+        let annot_dict = match annot_obj.as_dict() {
+            Ok(d) => d,
+            Err(_) => continue,
+        };
+
+        // Check if this is a FileAttachment annotation
+        let subtype = annot_dict.get(b"Subtype").ok().and_then(|o| o.as_name_str().ok());
+        if subtype != Some("FileAttachment") {
+            continue;
+        }
+
+        // Get the referenced FileSpec
+        let fs = match annot_dict.get(b"FS").ok() {
+            Some(lopdf::Object::Reference(r)) => doc.get_object(*r).ok()?,
+            Some(other) => other,
+            None => continue,
+        };
+
+        if let Some(jumbf) = try_extract_c2pa_from_filespec(doc, fs) {
+            return Some(jumbf);
+        }
+    }
+
+    None
+}
+
+/// Check if a FileSpec dictionary has /AFRelationship /C2PA_Manifest,
+/// and if so, extract the embedded file stream content.
+fn try_extract_c2pa_from_filespec(
+    doc: &lopdf::Document,
+    obj: &lopdf::Object,
+) -> Option<Vec<u8>> {
+    let dict = obj.as_dict().ok()?;
+
+    // Check /AFRelationship is /C2PA_Manifest
+    let rel = dict
+        .get(b"AFRelationship")
+        .ok()?
+        .as_name_str()
+        .ok()?;
+    if rel != "C2PA_Manifest" {
+        return None;
+    }
+
+    // Get /EF dictionary → /F stream reference
+    let ef = dict.get(b"EF").ok()?;
+    let ef_obj = if let lopdf::Object::Reference(r) = ef {
+        doc.get_object(*r).ok()?
+    } else {
+        ef
+    };
+    let ef_dict = ef_obj.as_dict().ok()?;
+
+    let f_ref = ef_dict.get(b"F").ok()?;
+    let stream_obj = match f_ref {
+        lopdf::Object::Reference(r) => doc.get_object(*r).ok()?,
+        other => other,
+    };
+
+    let stream = stream_obj.as_stream().ok()?;
+
+    // Get decompressed content (handles FlateDecode)
+    let mut stream_clone = stream.clone();
+    stream_clone.decompress();
+    Some(stream_clone.content)
 }
 
 // ---------------------------------------------------------------------------

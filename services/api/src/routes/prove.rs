@@ -65,31 +65,33 @@ pub async fn prove(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("tempfile: {e}")))?;
     let sidecar_path = sidecar.path().to_string_lossy().to_string();
 
-    // Shell out to the prover binary
+    // Shell out to the prover binary (pre-built release binary)
     let prover_dir = state.prover_dir.clone();
     let trust_dir = state.trust_dir.clone();
+    let prover_bin = PathBuf::from(&prover_dir).join("target/release/prove");
     let mut prover_args = vec![
-        "run", "--bin", "prove", "--",
-        "--media", &tmp_path,
-        "--trust-dir", &trust_dir,
-        "--json-out", &sidecar_path,
+        "--media".to_string(), tmp_path.clone(),
+        "--trust-dir".to_string(), trust_dir,
+        "--json-out".to_string(), sidecar_path.clone(),
     ];
     let use_mock = std::env::var("PROVER_MOCK").unwrap_or_else(|_| "true".to_string()) != "false";
     if use_mock {
-        prover_args.push("--mock");
+        prover_args.push("--mock".to_string());
     }
-    let output = tokio::process::Command::new("cargo")
+    let output = tokio::process::Command::new(&prover_bin)
         .args(&prover_args)
         .current_dir(&prover_dir)
+        .envs(std::env::vars())
         .output()
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("prover spawn: {e}")))?;
 
     if !output.status.success() {
+        let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err((
             StatusCode::INTERNAL_SERVER_ERROR,
-            format!("prover failed: {stderr}"),
+            format!("prover failed:\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"),
         ));
     }
 

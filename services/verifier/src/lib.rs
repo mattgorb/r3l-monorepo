@@ -168,9 +168,12 @@ fn try_read(path: &str, trust_pem: &str) -> Result<Option<c2pa::Reader>> {
     };
     match result {
         Ok(r) => Ok(Some(r)),
-        Err(e) if e.to_string().to_lowercase().contains("jumbf") => Ok(None),
-        Err(e) => Err(anyhow::anyhow!("{e}"))
-            .with_context(|| format!("reading C2PA from {path}")),
+        Err(e) => {
+            // If c2pa-rs can't parse the file, treat it as "no C2PA found"
+            // rather than a fatal error. The prover has its own extraction.
+            eprintln!("c2pa-rs could not read {path}: {e}");
+            Ok(None)
+        }
     }
 }
 

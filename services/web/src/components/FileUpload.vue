@@ -51,7 +51,7 @@ function onInput(e: Event) {
       ref="input"
       type="file"
       class="hidden"
-      accept="image/*,video/*,audio/*"
+      accept="image/*,video/*,audio/*,.pdf,.mp4,.mov,.heif,.heic"
       @change="onInput"
     />
 

@@ -303,27 +303,50 @@ From your local machine:
 ```bash
 # Sync source code (excludes build artifacts)
 rsync -avz \
+  -e "ssh -i ~/.ssh/id_rsa" \
   --exclude target \
   --exclude node_modules \
   --exclude test-ledger \
   --exclude .anchor \
   ~/Desktop/projects/r3l-provenance/services/ \
-  ec2-user@<INSTANCE_IP>:~/r3l-provenance/services/
+  ec2-user@18.209.36.61:~/r3l-provenance/services/
+
 
 # Sync data (trust anchors + sample media)
 rsync -avz \
   ~/Desktop/projects/r3l-provenance/data/ \
-  ec2-user@<INSTANCE_IP>:~/r3l-provenance/data/
+  ec2-user@100.31.50.216:~/r3l-provenance/data/
+  
 ```
 
 ### Build on EC2
 
+After syncing code, rebuild everything that changed:
+
 ```bash
+# 1. Prover binary (SP1 guest + host) — only if prover/ source changed
 cd ~/r3l-provenance/services/prover/script
+cargo build --release
+
+# 2. Solana program — only if provenance_attestation/ source changed
+cd ~/r3l-provenance/services/provenance_attestation
+anchor build --no-idl
+# Redeploy to running validator (airdrop first if validator was reset)
+solana airdrop 10
+solana program deploy target/deploy/provenance_attestation.so \
+  --program-id target/deploy/provenance_attestation-keypair.json
+
+# 3. Vue frontend — only if web/ source changed
+cd ~/r3l-provenance/services/web
+npm install
+npm run build
+
+# 4. API server — only if api/ or verifier/ source changed
+cd ~/r3l-provenance/services/api
 cargo build --release
 ```
 
-This takes ~5 min on first build (compiles the SP1 guest program + host binary).
+First prover build takes ~5 min (compiles the SP1 guest program + host binary). Subsequent builds are incremental.
 
 ### Generate a real Groth16 proof
 
@@ -371,7 +394,7 @@ JSON sidecar written to proof-output.json
 | **PNG** | `\x89PNG` magic | caBX chunks | Yes (ES256 signatures) |
 | **JPEG** | `\xFF\xD8\xFF` magic | APP11 marker segments | Only ES256 — Adobe files use PS256, so `has_c2pa: false` |
 | **MP4** | `ftyp` at offset 4 | UUID box with C2PA UUID | Yes (ES256 signatures) |
-| **PDF** | — | Not supported | No |
+| **PDF** | `%PDF-` magic | Associated File with `/AFRelationship /C2PA_Manifest` | Yes (ES256 signatures) |
 
 The guest program only verifies **ES256 (P-256 ECDSA)** signatures. Files signed with PS256 (RSA-PSS) will extract correctly but output `has_c2pa: false` because the signature can't be verified in the zkVM.
 
@@ -415,10 +438,23 @@ solana config set --url http://127.0.0.1:8899
 solana airdrop 10
 
 # Compile the smart contract — NO skip-verification so real GPU proofs
-# are cryptographically verified on-chain
+# are cryptographically verified on-chain (only needed once, unless source changes)
 anchor build --no-idl
 
 # Upload the compiled .so to the blockchain with a deterministic address
+solana program deploy target/deploy/provenance_attestation.so \
+  --program-id target/deploy/provenance_attestation-keypair.json
+```
+
+#### After a validator restart
+You don't need to rebuild — just re-fund and re-deploy the existing `.so`:
+```bash
+solana-test-validator --reset
+
+#separate terminaL
+cd ~/r3l-provenance/services/provenance_attestation
+anchor build --no-idl
+solana airdrop 10
 solana program deploy target/deploy/provenance_attestation.so \
   --program-id target/deploy/provenance_attestation-keypair.json
 ```
@@ -434,18 +470,25 @@ The API server bundles the verifier (as a library) and serves the Vue frontend a
 curl -fsSL https://rpm.nodesource.com/setup_22.x | sudo bash -
 sudo yum install -y nodejs
 
-# Build the Vue frontend
+
+# Build and run the API server (serves frontend from ../web/dist)
+# PROVER_MOCK=false: generate real Groth16 proofs (not mock)
+# SP1_PROVER=cuda: use GPU for proof generation
+cd ~/r3l-provenance/services/api
+PROVER_MOCK=false \
+SP1_PROVER=cuda \
+TRUST_DIR=../../data/trust \
+PROGRAM_ID=6VoF5vTQfCSVUMqbpxw8Z8YjvzPEmgkYD6477kyN6eNw \
+SOLANA_RPC_URL=http://127.0.0.1:8899 \
+STATIC_DIR=../web/dist \
+PROVER_MOCK=false \
+SP1_PROVER=cuda \
+cargo run --release
+
 cd ~/r3l-provenance/services/web
 npm install
 npm run build
-
-# Build and run the API server (serves frontend from ../web/dist)
-cd ~/r3l-provenance/services/api
-TRUST_DIR=../../data/trust \
-PROGRAM_ID=<your-deployed-program-id> \
-SOLANA_RPC_URL=http://127.0.0.1:8899 \
-STATIC_DIR=../web/dist \
-cargo run --release
+ssh -i ~/.ssh/id_rsa -L 3001:localhost:3001 ec2-user@18.209.36.61
 ```
 
 The API starts on port 3001, serving both the REST API and the Vue UI.
@@ -456,7 +499,7 @@ Use an SSH tunnel to access port 3001 locally:
 
 ```bash
 # From your local machine
-ssh -i ~/.ssh/id_rsa -L 3001:localhost:3001 ec2-user@100.31.50.216
+ssh -i ~/.ssh/id_rsa -L 3001:localhost:3001 ec2-user@54.210.48.227
 ```
 
 Then open **http://localhost:3001** in your browser.

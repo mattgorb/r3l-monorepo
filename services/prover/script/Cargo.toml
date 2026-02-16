@@ -28,6 +28,7 @@ sha2 = "0.10"
 coset = "0.3"
 ciborium = "0.2"
 pem = "3"
+lopdf = "0.34"
 
 [build-dependencies]
 sp1-build = "5.0.0"
