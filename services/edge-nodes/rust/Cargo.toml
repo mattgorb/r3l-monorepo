@@ -1,0 +1,20 @@
+[package]
+name = "r3l-edge"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1"
+bs58 = "0.5"
+clap = { version = "4", features = ["derive", "env"] }
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+hex = "0.4"
+rand = "0.8"
+reqwest = { version = "0.12", features = ["json", "blocking"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tlsh2 = "0.3"
+
+# Optional: link verifier library for full verify+attest in one binary
+# verifier = { path = "../verifier" }

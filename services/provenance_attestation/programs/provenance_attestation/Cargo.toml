@@ -15,6 +15,7 @@ no-idl = []
 no-log-ix-name = []
 idl-build = ["anchor-lang/idl-build"]
 skip-verification = []
+skip-authority-check = []
 
 [dependencies]
 anchor-lang = "0.30"

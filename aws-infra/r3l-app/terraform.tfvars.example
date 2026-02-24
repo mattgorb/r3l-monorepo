@@ -1,0 +1,4 @@
+aws_region     = "us-east-1"
+solana_rpc_url = "https://api.devnet.solana.com"
+db_password    = "CHANGE_ME_strong_password_here"
+program_id     = "63jq6M3t5NafYWcADqLDCLnhd5qPfEmCUcaA9iWh5YWz"

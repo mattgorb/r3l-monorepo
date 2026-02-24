@@ -1,6 +1,8 @@
 use anchor_lang::prelude::*;
 
-/// On-chain attestation record, one per file.
+/// Unified on-chain attestation record, one per file.
+/// Contains C2PA verification signals, optional email identity,
+/// optional wallet identity, and verifier versioning.
 /// PDA seeded by [b"attestation", content_hash].
 #[account]
 pub struct Attestation {
@@ -30,6 +32,26 @@ pub struct Attestation {
     pub timestamp: i64,
     /// PDA bump seed
     pub bump: u8,
+    /// How this attestation was created: "zk_groth16" or "trusted_verifier"
+    pub proof_type: String,
+
+    // ── Identity fields (optional, "" / zeros / default if not set) ──
+
+    /// Verified email domain (e.g., "washingtonpost.com")
+    pub email_domain: String,
+    /// SHA-256 of the full email address (privacy-preserving)
+    pub email_hash: [u8; 32],
+    /// Wallet pubkey that signed an attestation message
+    pub wallet: Pubkey,
+    /// Ed25519 signature from the wallet (verified on-chain via precompile)
+    pub wallet_sig: [u8; 64],
+
+    // ── Versioning fields ──
+
+    /// Version of the verifier binary (e.g., "0.1.0")
+    pub verifier_version: String,
+    /// SHA-256 hex of the concatenated trust list PEM bundle
+    pub trust_bundle_hash: String,
 }
 
 impl Attestation {
@@ -38,7 +60,8 @@ impl Attestation {
 
     /// Space needed for the account:
     /// 8 (discriminator) + 32 (content_hash) + 1 (has_c2pa) +
-    /// 8 * (4 + MAX_STRING_LEN) (strings with length prefix) +
-    /// 32 (submitted_by) + 8 (timestamp) + 1 (bump)
-    pub const SPACE: usize = 8 + 32 + 1 + 8 * (4 + Self::MAX_STRING_LEN) + 32 + 8 + 1;
+    /// 12 * (4 + MAX_STRING_LEN) (12 string fields) +
+    /// 32 (submitted_by) + 8 (timestamp) + 1 (bump) +
+    /// 32 (email_hash) + 32 (wallet) + 64 (wallet_sig)
+    pub const SPACE: usize = 8 + 32 + 1 + 12 * (4 + Self::MAX_STRING_LEN) + 32 + 8 + 1 + 32 + 32 + 64;
 }

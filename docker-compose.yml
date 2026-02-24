@@ -1,4 +1,45 @@
 services:
+  # ---- full local stack: ./dev.sh ----
+
+  postgres:
+    image: pgvector/pgvector:pg16
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: r3l
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  api:
+    build:
+      context: .
+      dockerfile: docker/api-py.Dockerfile
+    ports:
+      - "3001:3001"
+    depends_on:
+      - postgres
+    env_file:
+      - .env
+    environment:
+      TRUST_DIR: /data/trust
+      SOLANA_RPC_URL: http://host.docker.internal:8899
+      SOLANA_KEYPAIR_PATH: /keys/id.json
+      PROGRAM_ID: ${PROGRAM_ID:-kK63ncGUJXCWjUqSYzcN92tW531rt4UtacJBmHWXJ16}
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/r3l
+    volumes:
+      - ~/.config/solana:/keys:ro
+
+  # ---- standalone tools ----
+
+  verifier:
+    build:
+      context: .
+      dockerfile: docker/verifier.Dockerfile
+    volumes:
+      - ./data:/data:ro
+    # Run with: docker compose run --rm verifier /data/samples/chatgpt.png
+
   verifier-dev:
     build:
       context: .
@@ -10,30 +51,7 @@ services:
       - ./:/workspace
       - verifier-target:/workspace/services/verifier/target
     command: bash -c "cargo run -- ../../data/samples/a.png"
-    # ^ replace the path with whatever file you want to test
-
-  verifier:
-    build:
-      context: .
-      dockerfile: docker/verifier.Dockerfile
-    volumes:
-      - ./data:/data:ro
-    # Run with: docker compose run --rm verifier /data/samples/example.jpg
-
-  api:
-    build:
-      context: .
-      dockerfile: docker/api.Dockerfile
-    ports:
-      - "3001:3001"
-    environment:
-      TRUST_DIR: /data/trust
-      SOLANA_RPC_URL: http://host.docker.internal:8899
-      SOLANA_KEYPAIR_PATH: /keys/id.json
-    volumes:
-      - ./data:/data:ro
-      - ~/.config/solana:/keys:ro
-    # Start with: docker compose up api
 
 volumes:
+  pgdata:
   verifier-target:

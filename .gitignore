@@ -8,3 +8,21 @@ data/fixtures/
 test-ledger/
 .DS_Store
 .anchor/
+
+# Terraform
+*.tfstate
+*.tfstate.*backup
+.terraform/
+terraform.tfvars
+
+# Build artifacts
+*.o
+services/edge-nodes/c/r3l-edge
+
+# Secrets
+*keypair.json
+docker/.solana-keypair.json
+
+# IDE / tooling
+.claude/
+__pycache__/

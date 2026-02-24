@@ -36,6 +36,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 COPY --from=build /workspace/services/api/target/release/api /app/api
 COPY --from=frontend /workspace/services/web/dist /app/static
+COPY data/trust /data/trust
 
 ENV TRUST_DIR=/data/trust
 ENV BIND_ADDR=0.0.0.0:3001

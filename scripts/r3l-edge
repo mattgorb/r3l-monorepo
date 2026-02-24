@@ -1,0 +1,293 @@
+#!/usr/bin/env python3
+"""R3L Edge Node CLI — verify files locally, attest on-chain via the R3L API.
+
+Usage:
+  r3l-edge register [--name NAME] [--keypair PATH] [--api URL]
+  r3l-edge attest   <file> [--keypair PATH] [--api URL] [--api-key KEY]
+  r3l-edge lookup   <hash> [--api URL]
+  r3l-edge query    <hash> [--api URL]
+
+Environment variables (alternative to flags):
+  R3L_API_URL    — API base URL (default: http://localhost:3001)
+  R3L_API_KEY    — API key from registration
+  R3L_KEYPAIR    — path to edge-keypair.json
+"""
+import argparse
+import json
+import os
+import subprocess
+import sys
+import urllib.request
+import urllib.error
+
+# ── Helpers ───────────────────────────────────────────────────────
+
+def _api_url():
+    return os.environ.get("R3L_API_URL", "http://localhost:3001")
+
+
+def _api_key():
+    return os.environ.get("R3L_API_KEY", "")
+
+
+def _keypair_path():
+    return os.environ.get("R3L_KEYPAIR", "edge-keypair.json")
+
+
+def _post(url: str, body: dict, headers: dict | None = None) -> dict:
+    data = json.dumps(body).encode()
+    hdrs = {"Content-Type": "application/json"}
+    if headers:
+        hdrs.update(headers)
+    req = urllib.request.Request(url, data=data, headers=hdrs, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        body = e.read().decode()
+        print(f"Error {e.code}: {body}", file=sys.stderr)
+        sys.exit(1)
+
+
+def _get(url: str) -> dict:
+    req = urllib.request.Request(url)
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        body = e.read().decode()
+        print(f"Error {e.code}: {body}", file=sys.stderr)
+        sys.exit(1)
+
+
+def _load_keypair(path: str):
+    """Load a 64-byte Ed25519 keypair from Solana-style JSON array."""
+    try:
+        import nacl.signing
+        import base58 as b58
+    except ImportError:
+        print("Missing dependencies. Install: pip install pynacl base58", file=sys.stderr)
+        sys.exit(1)
+
+    with open(path) as f:
+        raw = json.load(f)
+    key_bytes = bytes(raw[:32])
+    signing_key = nacl.signing.SigningKey(key_bytes)
+    return signing_key, b58
+
+
+def _generate_keypair(path: str):
+    """Generate a new Ed25519 keypair and save to path."""
+    try:
+        import nacl.signing
+        import base58 as b58
+    except ImportError:
+        print("Missing dependencies. Install: pip install pynacl base58", file=sys.stderr)
+        sys.exit(1)
+
+    key = nacl.signing.SigningKey.generate()
+    full = list(key.encode() + key.verify_key.encode())
+    with open(path, "w") as f:
+        json.dump(full, f)
+    print(f"Generated keypair: {path}")
+    return key, b58
+
+
+def _find_verifier() -> str:
+    """Locate the verifier binary."""
+    candidates = [
+        os.path.join(os.path.dirname(__file__), "..", "services", "verifier", "target", "release", "verifier"),
+        "verifier",
+    ]
+    for c in candidates:
+        full = os.path.abspath(c)
+        if os.path.isfile(full) and os.access(full, os.X_OK):
+            return full
+    print("Cannot find verifier binary. Build with: cargo build --release -p verifier", file=sys.stderr)
+    sys.exit(1)
+
+
+def _find_trust_dir() -> str:
+    """Locate the trust directory."""
+    candidates = [
+        os.path.join(os.path.dirname(__file__), "..", "data", "trust"),
+        "data/trust",
+    ]
+    for c in candidates:
+        full = os.path.abspath(c)
+        if os.path.isdir(full):
+            return full
+    return ""
+
+
+# ── Commands ──────────────────────────────────────────────────────
+
+def cmd_register(args):
+    kp_path = args.keypair or _keypair_path()
+
+    if os.path.exists(kp_path):
+        key, b58 = _load_keypair(kp_path)
+        print(f"Using existing keypair: {kp_path}")
+    else:
+        key, b58 = _generate_keypair(kp_path)
+
+    pubkey = b58.b58encode(key.verify_key.encode()).decode()
+    message = "R3L: register"
+    sig = key.sign(message.encode()).signature
+    sig_b58 = b58.b58encode(sig).decode()
+
+    api = args.api or _api_url()
+    resp = _post(f"{api}/api/edge/register", {
+        "pubkey": pubkey,
+        "message": message,
+        "signature": sig_b58,
+        "name": args.name or f"edge-{pubkey[:8]}",
+    })
+
+    print(f"\nRegistered successfully!")
+    print(f"  Pubkey:  {resp['pubkey']}")
+    print(f"  Name:    {resp['name']}")
+    print(f"  API Key: {resp['api_key']}")
+    print(f"\nSave your API key:")
+    print(f"  export R3L_API_KEY={resp['api_key']}")
+
+
+def cmd_attest(args):
+    filepath = args.file
+    if not os.path.isfile(filepath):
+        print(f"File not found: {filepath}", file=sys.stderr)
+        sys.exit(1)
+
+    api_key = args.api_key or _api_key()
+    if not api_key:
+        print("No API key. Set R3L_API_KEY or pass --api-key, or run 'r3l-edge register' first.", file=sys.stderr)
+        sys.exit(1)
+
+    # 1. Run verifier locally
+    verifier = _find_verifier()
+    trust_dir = _find_trust_dir()
+    cmd = [verifier]
+    if trust_dir:
+        cmd += ["--trust-dir", trust_dir]
+    cmd.append(filepath)
+
+    print(f"Verifying: {filepath}")
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+    except FileNotFoundError:
+        print(f"Verifier not found at: {verifier}", file=sys.stderr)
+        sys.exit(1)
+
+    if result.returncode != 0:
+        print(f"Verifier failed:\n{result.stderr}", file=sys.stderr)
+        sys.exit(1)
+
+    verify_output = json.loads(result.stdout)
+    content_hash = verify_output.get("content_hash")
+    if not content_hash:
+        print("No content_hash in verifier output", file=sys.stderr)
+        sys.exit(1)
+
+    print(f"Content hash: {content_hash}")
+    print(f"C2PA: {verify_output.get('has_c2pa', False)}")
+    if verify_output.get("trust_list_match"):
+        print(f"Trust list: {verify_output['trust_list_match']}")
+
+    # 2. Sign wallet message (if keypair available)
+    kp_path = args.keypair or _keypair_path()
+    wallet_sig = ""
+    if os.path.exists(kp_path):
+        try:
+            key, b58 = _load_keypair(kp_path)
+            message = f"R3L: attest {content_hash}"
+            sig = key.sign(message.encode()).signature
+            wallet_sig = b58.b58encode(sig).decode()
+            print(f"Wallet signature: included")
+        except Exception:
+            pass
+
+    # 3. Submit to API
+    api = args.api or _api_url()
+    body = {
+        "content_hash": content_hash,
+        "has_c2pa": verify_output.get("has_c2pa", False),
+        "trust_list_match": verify_output.get("trust_list_match") or "",
+        "validation_state": verify_output.get("validation_state") or "",
+        "digital_source_type": verify_output.get("digital_source_type") or "",
+        "issuer": verify_output.get("issuer") or "",
+        "common_name": verify_output.get("common_name") or "",
+        "software_agent": verify_output.get("software_agent") or "",
+        "signing_time": verify_output.get("signing_time") or "",
+    }
+    if wallet_sig:
+        body["wallet_signature"] = wallet_sig
+
+    print(f"Submitting attestation...")
+    resp = _post(f"{api}/api/edge/attest", body, {"X-API-Key": api_key})
+
+    if resp.get("existing"):
+        print(f"\nAttestation already exists:")
+    else:
+        print(f"\nAttestation created:")
+    print(f"  Content hash: {resp['content_hash']}")
+    print(f"  PDA:          {resp['attestation_pda']}")
+    if resp.get("signature"):
+        print(f"  Tx signature: {resp['signature']}")
+    if resp.get("wallet_pubkey"):
+        print(f"  Wallet:       {resp['wallet_pubkey']}")
+
+
+def cmd_lookup(args):
+    api = args.api or _api_url()
+    resp = _get(f"{api}/api/attestation/{args.hash}")
+    print(json.dumps(resp, indent=2))
+
+
+def cmd_query(args):
+    api = args.api or _api_url()
+    resp = _get(f"{api}/api/v1/query/{args.hash}")
+    print(json.dumps(resp, indent=2))
+
+
+# ── CLI ───────────────────────────────────────────────────────────
+
+def main():
+    parser = argparse.ArgumentParser(
+        prog="r3l-edge",
+        description="R3L Edge Node CLI — verify files locally, attest on-chain",
+    )
+    sub = parser.add_subparsers(dest="command")
+
+    # register
+    reg = sub.add_parser("register", help="Register edge node and get API key")
+    reg.add_argument("--name", help="Node name (default: edge-<pubkey prefix>)")
+    reg.add_argument("--keypair", help=f"Path to keypair JSON (default: edge-keypair.json)")
+    reg.add_argument("--api", help=f"API URL (default: $R3L_API_URL or http://localhost:3001)")
+
+    # attest
+    att = sub.add_parser("attest", help="Verify a file locally and submit attestation")
+    att.add_argument("file", help="Path to media file")
+    att.add_argument("--keypair", help="Path to keypair JSON for wallet signing")
+    att.add_argument("--api", help="API URL")
+    att.add_argument("--api-key", help="API key (default: $R3L_API_KEY)")
+
+    # lookup
+    lk = sub.add_parser("lookup", help="Look up attestation by content hash (raw)")
+    lk.add_argument("hash", help="Content hash (hex)")
+    lk.add_argument("--api", help="API URL")
+
+    # query
+    qr = sub.add_parser("query", help="Query structured trust verdict for a content hash")
+    qr.add_argument("hash", help="Content hash (hex)")
+    qr.add_argument("--api", help="API URL")
+
+    args = parser.parse_args()
+    if args.command is None:
+        parser.print_help()
+        sys.exit(0)
+
+    {"register": cmd_register, "attest": cmd_attest, "lookup": cmd_lookup, "query": cmd_query}[args.command](args)
+
+
+if __name__ == "__main__":
+    main()

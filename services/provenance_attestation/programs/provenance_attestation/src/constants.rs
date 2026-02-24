@@ -6,3 +6,10 @@ pub const ATTESTATION_SEED: &[u8] = b"attestation";
 /// This must be updated whenever the guest program changes.
 pub const SP1_VKEY_HASH: &str =
     "0x009878322602e195e87e92e6771e1b212993077890856ee1b40a169c8d4cff27";
+
+/// R3L trusted verifier authority pubkey.
+/// Only this key can call submit_attestation (the no-ZK path).
+/// Set to your server's Solana keypair pubkey:
+///   solana-keygen pubkey ~/.config/solana/id.json
+/// TODO: Replace with actual server pubkey before mainnet deploy.
+pub const AUTHORITY: &str = "G8xh8wQuuKC7Nrcgp4Lv9R1oX3bcPTHcbKtBaou25F7Y";
