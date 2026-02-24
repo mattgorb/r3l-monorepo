@@ -1,23 +1,22 @@
 # R3L Monorepo
 
-R3L is a media attestation platform on Solana. Upload any media file — image, video, PDF — and R3L records a permanent on-chain attestation keyed by its SHA-256 content hash, linked to the attester's verified identity. If the file contains [C2PA](https://c2pa.org/) provenance metadata, R3L also verifies the manifest chain and certificate trust, giving the attestation a higher trust tier. All attested content is indexed with CLIP embeddings and TLSH hashes in pgvector for semantic similarity search.
+R3L is a media attestation platform on Solana. Upload any media file — image, video, PDF — and R3L records a permanent on-chain attestation keyed by its SHA-256 content hash, linked to the attester's verified identity. All attested content is indexed with CLIP embeddings and TLSH hashes in pgvector for semantic similarity search.
 
 ## How It Works
 
-1. **Attest** — Upload a media file. R3L hashes it, checks for C2PA metadata (if present, validates the manifest chain against official and curated trust lists), and writes the attestation on-chain as a Solana PDA. The attestation is optionally linked to the attester's identity (email, wallet, or org).
-2. **Verify** — If the file has C2PA metadata, R3L parses and validates the full manifest chain, certificate trust, digital source type, issuer, and signing time.
-3. **Prove (ZK)** — C2PA verification can run inside SP1's zkVM to produce a Groth16 proof verified on-chain. Fully trustless, requires GPU.
-4. **Search** — CLIP embeddings and TLSH hashes are stored in pgvector. Query by file upload or content hash to find semantically similar attested media.
-5. **Lookup** — Anyone can look up an attestation by content hash to see its trust tier, C2PA signals (if any), attester identity, and on-chain transaction.
+1. **Attest** — Upload a media file. R3L hashes it and writes an attestation on-chain as a Solana PDA. The attestation is optionally linked to the attester's identity (email, wallet, or org). If the file contains embedded provenance metadata (e.g. C2PA), it is automatically extracted and included.
+2. **Search** — CLIP embeddings and TLSH hashes are stored in pgvector. Query by file upload or content hash to find semantically similar attested media.
+3. **Lookup** — Anyone can look up an attestation by content hash to see its trust tier, provenance signals, attester identity, and on-chain transaction.
+4. **Prove (ZK)** — Provenance verification can optionally run inside SP1's zkVM to produce a Groth16 proof verified on-chain. Fully trustless, requires GPU.
 
 ### Trust Tiers
 
 | Tier | Label | Criteria |
 |------|-------|----------|
-| 1 | Verified Origin | C2PA + official trust list + device-signed (`digitalCapture`) |
-| 2 | Verified Tool Chain | C2PA + official or curated trust list |
-| 3 | Verified Creator | Identity-verified attester in R3L registry, no C2PA required |
-| 4 | Unverified | Anonymous attestation, no C2PA, unknown signer, or untrusted certificate |
+| 1 | Verified Origin | Embedded provenance from a trusted device (e.g. camera-signed C2PA) |
+| 2 | Verified Tool Chain | Embedded provenance from a trusted tool or platform |
+| 3 | Verified Creator | Identity-verified attester, no embedded provenance required |
+| 4 | Unverified | Anonymous attestation or untrusted provenance metadata |
 
 ## Project Structure
 
@@ -26,14 +25,14 @@ services/
   api-py/             FastAPI server (verify, attest, prove, search, auth, org, DID)
   api-rust/           Original Axum API (deprecated, kept for reference)
   web/                Vue 3 + TypeScript + Tailwind frontend
-  verifier/           Standalone C2PA verifier (Rust lib + CLI)
+  verifier/           Standalone provenance verifier (Rust lib + CLI)
   prover/             SP1 zkVM prover (Groth16 proof generation)
   provenance_attestation/   Anchor Solana program
   edge-nodes/         Edge node implementations (C, Python, Rust)
 data/
   samples/            Test media files
   test_files/         Additional test fixtures
-  trust/              Trust anchor PEM certificates (official + curated)
+  trust/              Trust anchor certificates (official + curated)
 docs/                 Architecture, deployment, local testing, edge node docs
 aws-infra/            Terraform configs (App Runner, GPU instances)
 docker/               Dockerfiles for API, verifier, validator
@@ -101,11 +100,11 @@ Starts Postgres, the API server, and the verifier. Requires a local Solana valid
 
 | Method | Path | Description |
 |--------|------|-------------|
-| POST | `/api/attest` | Upload file, attest on-chain (with C2PA verification if present) |
-| POST | `/api/verify` | Upload file, get C2PA verification report (no on-chain write) |
+| POST | `/api/attest` | Upload file, attest on-chain |
+| POST | `/api/verify` | Upload file, get provenance verification report (no on-chain write) |
 | GET | `/api/attestation/{hash}` | Look up attestation by content hash |
 | GET | `/api/attestations` | List all attestations |
-| POST | `/api/prove` | Generate ZK proof of C2PA verification |
+| POST | `/api/prove` | Generate ZK proof of provenance verification |
 | POST | `/api/submit` | Submit pre-generated proof on-chain |
 | GET | `/api/v1/query/{hash}` | Query verdict for a content hash |
 | POST | `/api/v1/similar` | Find similar media by file upload |
