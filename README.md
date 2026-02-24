@@ -1,13 +1,14 @@
 # R3L Monorepo
 
-R3L is a media provenance platform that verifies [C2PA](https://c2pa.org/) metadata, generates zero-knowledge proofs of verification, and records attestations on Solana. It combines on-chain provenance with vector similarity search (CLIP + TLSH in pgvector) so attested content is both verifiable and semantically searchable.
+R3L is a media attestation platform on Solana. Upload any media file — image, video, PDF — and R3L records a permanent on-chain attestation keyed by its SHA-256 content hash, linked to the attester's verified identity. If the file contains [C2PA](https://c2pa.org/) provenance metadata, R3L also verifies the manifest chain and certificate trust, giving the attestation a higher trust tier. All attested content is indexed with CLIP embeddings and TLSH hashes in pgvector for semantic similarity search.
 
 ## How It Works
 
-1. **Verify** — Upload a media file. The C2PA manifest is parsed, the certificate chain is validated against official and curated trust lists, and the file gets a trust tier.
-2. **Attest** — Verification results are written on-chain as a Solana PDA keyed by the file's SHA-256 hash. Optionally linked to the attester's identity (email, wallet, or org).
-3. **Prove (ZK)** — C2PA verification runs inside SP1's zkVM and produces a Groth16 proof that can be verified on-chain. Fully trustless, requires GPU.
+1. **Attest** — Upload a media file. R3L hashes it, checks for C2PA metadata (if present, validates the manifest chain against official and curated trust lists), and writes the attestation on-chain as a Solana PDA. The attestation is optionally linked to the attester's identity (email, wallet, or org).
+2. **Verify** — If the file has C2PA metadata, R3L parses and validates the full manifest chain, certificate trust, digital source type, issuer, and signing time.
+3. **Prove (ZK)** — C2PA verification can run inside SP1's zkVM to produce a Groth16 proof verified on-chain. Fully trustless, requires GPU.
 4. **Search** — CLIP embeddings and TLSH hashes are stored in pgvector. Query by file upload or content hash to find semantically similar attested media.
+5. **Lookup** — Anyone can look up an attestation by content hash to see its trust tier, C2PA signals (if any), attester identity, and on-chain transaction.
 
 ### Trust Tiers
 
@@ -15,8 +16,8 @@ R3L is a media provenance platform that verifies [C2PA](https://c2pa.org/) metad
 |------|-------|----------|
 | 1 | Verified Origin | C2PA + official trust list + device-signed (`digitalCapture`) |
 | 2 | Verified Tool Chain | C2PA + official or curated trust list |
-| 3 | Verified Creator | Identity-verified creator in R3L registry |
-| 4 | Unverified | No C2PA, unknown signer, or untrusted certificate |
+| 3 | Verified Creator | Identity-verified attester in R3L registry, no C2PA required |
+| 4 | Unverified | Anonymous attestation, no C2PA, unknown signer, or untrusted certificate |
 
 ## Project Structure
 
@@ -100,8 +101,8 @@ Starts Postgres, the API server, and the verifier. Requires a local Solana valid
 
 | Method | Path | Description |
 |--------|------|-------------|
-| POST | `/api/verify` | Upload file, get C2PA verification report |
-| POST | `/api/attest` | Verify + write attestation on-chain |
+| POST | `/api/attest` | Upload file, attest on-chain (with C2PA verification if present) |
+| POST | `/api/verify` | Upload file, get C2PA verification report (no on-chain write) |
 | GET | `/api/attestation/{hash}` | Look up attestation by content hash |
 | GET | `/api/attestations` | List all attestations |
 | POST | `/api/prove` | Generate ZK proof of C2PA verification |
