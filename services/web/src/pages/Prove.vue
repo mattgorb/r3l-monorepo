@@ -33,7 +33,7 @@
               <span class="shrink-0 w-6 h-6 rounded-full bg-gray-800 text-gray-400 text-xs font-bold flex items-center justify-center">1</span>
               <div>
                 <span class="text-sm font-medium text-gray-400">Verify C2PA</span>
-                <p class="text-xs text-gray-600">Check provenance metadata and signatures</p>
+                <p class="text-xs text-gray-600">Check C2PA metadata and signatures</p>
               </div>
             </div>
           </div>

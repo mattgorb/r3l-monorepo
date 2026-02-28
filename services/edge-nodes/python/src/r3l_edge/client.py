@@ -214,6 +214,25 @@ class R3LEdgeClient:
             clip_embedding=clip_emb if clip_emb else None,
         )
 
+    def attest_url(self, url: str, store_content: bool = True, headers: dict[str, str] | None = None) -> dict:
+        """Submit a URL attestation. The API fetches, hashes, and attests the content.
+        Optional headers (e.g. Authorization) are forwarded when fetching the URL."""
+        if not self.api_key:
+            raise RuntimeError("No API key — call register() first")
+        body: dict = {"url": url, "store_content": store_content}
+        if headers:
+            body["headers"] = headers
+        return self._post("/api/attest/url", body, {"X-API-Key": self.api_key})
+
+    def attest_text(self, text: str, title: str | None = None, store_content: bool = True) -> dict:
+        """Submit a text attestation. The API hashes and attests the content."""
+        if not self.api_key:
+            raise RuntimeError("No API key — call register() first")
+        body: dict = {"text": text, "store_content": store_content}
+        if title:
+            body["title"] = title
+        return self._post("/api/attest/text", body, {"X-API-Key": self.api_key})
+
     def query(self, content_hash: str) -> dict:
         """Query the structured trust verdict for a content hash."""
         return self._get(f"/api/v1/query/{content_hash}")

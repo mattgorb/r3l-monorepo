@@ -170,13 +170,15 @@ async def email_verify(req: EmailVerifyRequest):
 
     del _email_codes[email]
 
-    # Check if email already has an account
+    # Check if email already has an account — return existing key
     existing = await db.get_customer_by_email(email)
     if existing:
-        raise HTTPException(
-            409,
-            "an account already exists for this email \u2014 use your existing API key to log in",
-        )
+        return {
+            "api_key": existing["api_key"],
+            "email": email,
+            "name": existing["name"],
+            "existing": True,
+        }
 
     # Create new customer
     api_key = _generate_api_key()
@@ -239,13 +241,15 @@ async def wallet_verify(req: WalletVerifyRequest):
     except BadSignatureError:
         raise HTTPException(400, "invalid signature")
 
-    # Check if wallet already has an account
+    # Check if wallet already has an account — return existing key
     existing = await db.get_customer_by_wallet(req.pubkey)
     if existing:
-        raise HTTPException(
-            409,
-            "an account already exists for this wallet \u2014 use your existing API key to log in",
-        )
+        return {
+            "api_key": existing["api_key"],
+            "pubkey": req.pubkey,
+            "name": existing["name"],
+            "existing": True,
+        }
 
     # Create new customer
     api_key = _generate_api_key()
@@ -284,7 +288,23 @@ async def get_me(caller: dict = Depends(require_api_key)):
             "email": caller.get("email"),
             "wallet_pubkey": caller.get("wallet_pubkey"),
             "auth_method": caller.get("auth_method"),
+            "privacy_mode": caller.get("privacy_mode", False),
         }
+
+
+# ── PATCH /api/auth/me/privacy ────────────────────────────────────
+
+class PrivacyModeRequest(BaseModel):
+    privacy_mode: bool
+
+
+@router.patch("/me/privacy")
+async def update_privacy_mode(req: PrivacyModeRequest, caller: dict = Depends(require_api_key)):
+    """Toggle privacy mode for individual accounts."""
+    if caller.get("type") == "org":
+        raise HTTPException(400, "privacy mode is only available for individual accounts")
+    updated = await db.update_customer_privacy_mode(caller["id"], req.privacy_mode)
+    return {"privacy_mode": updated["privacy_mode"]}
 
 
 # ── POST /api/auth/link/email/start ──────────────────────────────
@@ -302,9 +322,7 @@ async def link_email_start(req: EmailStartRequest, caller: dict = Depends(requir
     if "." not in domain or len(domain) < 3:
         raise HTTPException(400, "invalid email domain")
 
-    existing = await db.get_customer_by_email(email)
-    if existing:
-        raise HTTPException(409, "this email is already linked to another account")
+    # Allow even if email belongs to another account — merge happens at verify time
 
     _clean_expired_emails()
     code = _generate_code()
@@ -375,10 +393,14 @@ async def link_email_verify(req: EmailVerifyRequest, caller: dict = Depends(requ
 
     del _email_codes[email]
 
-    # Double-check not taken (race condition guard)
+    # Check if email belongs to another account — merge if so
     existing = await db.get_customer_by_email(email)
     if existing:
-        raise HTTPException(409, "this email is already linked to another account")
+        if existing["id"] == caller["id"]:
+            return {"status": "linked", "email": email}
+        # User proved ownership of both accounts — merge them
+        merged = await db.merge_customers(keep_id=caller["id"], remove_id=existing["id"])
+        return {"status": "merged", "email": email}
 
     await db.link_email_to_customer(caller["id"], email)
     return {"status": "linked", "email": email}
@@ -421,10 +443,14 @@ async def link_wallet(req: WalletVerifyRequest, caller: dict = Depends(require_a
     except BadSignatureError:
         raise HTTPException(400, "invalid signature")
 
-    # Check wallet not taken
+    # Check if wallet belongs to another account — merge if so
     existing = await db.get_customer_by_wallet(req.pubkey)
     if existing:
-        raise HTTPException(409, "this wallet is already linked to another account")
+        if existing["id"] == caller["id"]:
+            return {"status": "linked", "wallet_pubkey": req.pubkey}
+        # User proved ownership of both accounts — merge them
+        merged = await db.merge_customers(keep_id=caller["id"], remove_id=existing["id"])
+        return {"status": "merged", "wallet_pubkey": req.pubkey}
 
     await db.link_wallet_to_customer(caller["id"], req.pubkey)
     return {"status": "linked", "wallet_pubkey": req.pubkey}

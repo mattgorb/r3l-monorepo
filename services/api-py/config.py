@@ -18,6 +18,12 @@ class Settings(BaseSettings):
     public_url: str = "http://localhost:3001"
     database_url: str = "postgresql://postgres:postgres@localhost:5432/r3l"
 
+    # Storage
+    storage_backend: str = "local"           # "local" or "s3"
+    storage_dir: str = "../../data/storage"  # for local backend
+    s3_bucket: str = ""                      # for s3 backend
+    s3_prefix: str = "content/"              # key prefix in bucket
+
     # SMTP (optional — dev mode if not set)
     smtp_host: str = ""
     smtp_user: str = ""

@@ -2,10 +2,22 @@
 import { ref, computed, onMounted } from 'vue'
 import type { VerifyOutput, AttestResponse, MeResponse } from '../types'
 import FileUpload from '../components/FileUpload.vue'
-import { attestFile, getMe } from '../api'
+import { attestFile, attestUrl, attestText, getMe } from '../api'
+
+type TabMode = 'file' | 'url' | 'text'
+const activeTab = ref<TabMode>('file')
 
 const result = ref<VerifyOutput | null>(null)
 const file = ref<File | null>(null)
+
+// URL mode
+const urlInput = ref('')
+const showUrlHeaders = ref(false)
+const urlHeadersRaw = ref('')  // "Key: Value" per line
+
+// Text mode
+const textInput = ref('')
+const textTitle = ref('')
 
 // ── Logged-in identity ──
 const loggedInUser = ref<MeResponse | null>(null)
@@ -32,17 +44,6 @@ const identityLabel = computed(() => {
 function onVerified(r: VerifyOutput, f: File) {
   result.value = r
   file.value = f
-  // Auto-populate wallet if logged in with wallet
-  if (loggedInUser.value?.wallet_pubkey) {
-    walletPubkey.value = loggedInUser.value.wallet_pubkey
-    walletConnected.value = true
-    if (hasPhantom.value) {
-      walletMode.value = 'phantom'
-    } else {
-      walletMode.value = 'manual'
-      manualPubkey.value = loggedInUser.value.wallet_pubkey
-    }
-  }
 }
 
 // --- Signer status ---
@@ -71,7 +72,7 @@ const signerConfig = computed(() => {
     revoked: { label: 'Revoked Certificate', color: 'text-red-400', borderColor: 'border-red-800', desc: 'The signing certificate has been revoked.' },
     expired: { label: 'Expired Certificate', color: 'text-orange-400', borderColor: 'border-orange-800', desc: 'The signing certificate has expired.' },
     self_signed: { label: 'Self-Signed', color: 'text-red-400', borderColor: 'border-red-800', desc: 'Signed with a self-signed certificate. Cannot verify origin.' },
-    no_c2pa: { label: 'No C2PA', color: 'text-gray-400', borderColor: 'border-gray-700', desc: 'No C2PA provenance metadata found in this file.' },
+    no_c2pa: { label: 'No C2PA', color: 'text-gray-400', borderColor: 'border-gray-700', desc: 'No embedded C2PA metadata found in this file.' },
   }
   return configs[signerStatus.value]
 })
@@ -136,94 +137,66 @@ async function copyToClipboard(value: string, fieldLabel: string) {
   } catch { /* no-op */ }
 }
 
-// --- Wallet identity ---
-type WalletMode = 'choose' | 'phantom' | 'manual'
-const walletMode = ref<WalletMode>('choose')
-const walletConnected = ref(false)
-const walletPubkey = ref<string | null>(null)
-const walletSigned = ref(false)
-const walletSignatureValue = ref<string | null>(null)
-const walletLoading = ref(false)
-const walletError = ref<string | null>(null)
-const manualPubkey = ref('')
-const manualSignature = ref('')
-
-const walletMessage = computed(() => {
-  if (!result.value?.content_hash) return ''
-  return `R3L: attest ${result.value.content_hash}`
-})
-
-const hasPhantom = computed(() => !!(window as any).solana?.isPhantom)
-
-async function connectPhantom() {
-  walletError.value = null
-  const provider = (window as any).solana
-  if (!provider?.isPhantom) {
-    walletError.value = 'Phantom wallet not found.'
-    return
-  }
-  try {
-    const resp = await provider.connect()
-    walletPubkey.value = resp.publicKey.toString()
-    walletConnected.value = true
-  } catch (e: any) {
-    walletError.value = e.message || 'Failed to connect wallet'
-  }
-}
-
-async function signWithPhantom() {
-  if (!walletPubkey.value || !result.value?.content_hash) return
-  walletLoading.value = true
-  walletError.value = null
-
-  const provider = (window as any).solana
-  const message = walletMessage.value
-
-  try {
-    const encoded = new TextEncoder().encode(message)
-    const { signature } = await provider.signMessage(encoded, 'utf8')
-    const bs58 = await import('bs58')
-    walletSignatureValue.value = bs58.default.encode(signature)
-    walletSigned.value = true
-  } catch (e: any) {
-    walletError.value = e.message || 'Failed to sign message'
-  } finally {
-    walletLoading.value = false
-  }
-}
-
-function submitManualWallet() {
-  if (!manualPubkey.value || !manualSignature.value) return
-  walletPubkey.value = manualPubkey.value.trim()
-  walletSignatureValue.value = manualSignature.value.trim()
-  walletSigned.value = true
-}
-
-// --- Single attest button (submits C2PA + wallet in one call) ---
+// --- Attest ---
 const attesting = ref(false)
 const attestError = ref<string | null>(null)
 const attestResult = ref<AttestResponse | null>(null)
 
-async function attestAll() {
+const privateMode = ref(false)
+const currentApiKey = computed(() => localStorage.getItem('r3l_api_key') || undefined)
+const isPrivacyMode = computed(() => loggedInUser.value?.privacy_mode === true)
+
+async function attestFileHandler() {
   if (!file.value) return
   attesting.value = true
   attestError.value = null
-
-  const opts: {
-    walletPubkey?: string
-    walletMessage?: string
-    walletSignature?: string
-  } = {}
-
-  // Include wallet if signed
-  if (walletSigned.value && walletPubkey.value && walletSignatureValue.value) {
-    opts.walletPubkey = walletPubkey.value
-    opts.walletMessage = walletMessage.value
-    opts.walletSignature = walletSignatureValue.value
-  }
-
   try {
-    attestResult.value = await attestFile(file.value, opts)
+    attestResult.value = await attestFile(file.value, { apiKey: currentApiKey.value, privateMode: privateMode.value })
+  } catch (e: any) {
+    const raw = e.response?.data || e.message || 'Unknown error'
+    attestError.value = typeof raw === 'string' ? raw : JSON.stringify(raw)
+  } finally {
+    attesting.value = false
+  }
+}
+
+function parseUrlHeaders(): Record<string, string> | undefined {
+  const raw = urlHeadersRaw.value.trim()
+  if (!raw) return undefined
+  const headers: Record<string, string> = {}
+  for (const line of raw.split('\n')) {
+    const idx = line.indexOf(':')
+    if (idx > 0) {
+      const key = line.slice(0, idx).trim()
+      const val = line.slice(idx + 1).trim()
+      if (key && val) headers[key] = val
+    }
+  }
+  return Object.keys(headers).length > 0 ? headers : undefined
+}
+
+async function attestUrlHandler() {
+  const url = urlInput.value.trim()
+  if (!url) return
+  attesting.value = true
+  attestError.value = null
+  try {
+    attestResult.value = await attestUrl(url, true, currentApiKey.value, parseUrlHeaders(), privateMode.value)
+  } catch (e: any) {
+    const raw = e.response?.data || e.message || 'Unknown error'
+    attestError.value = typeof raw === 'string' ? raw : JSON.stringify(raw)
+  } finally {
+    attesting.value = false
+  }
+}
+
+async function attestTextHandler() {
+  const text = textInput.value.trim()
+  if (!text) return
+  attesting.value = true
+  attestError.value = null
+  try {
+    attestResult.value = await attestText(text, textTitle.value.trim() || undefined, true, currentApiKey.value, privateMode.value)
   } catch (e: any) {
     const raw = e.response?.data || e.message || 'Unknown error'
     attestError.value = typeof raw === 'string' ? raw : JSON.stringify(raw)
@@ -235,17 +208,15 @@ async function attestAll() {
 function reset() {
   result.value = null
   file.value = null
+  urlInput.value = ''
+  privateMode.value = false
+  showUrlHeaders.value = false
+  urlHeadersRaw.value = ''
+  textInput.value = ''
+  textTitle.value = ''
   attestResult.value = null
   attestError.value = null
   attesting.value = false
-  walletMode.value = 'choose'
-  walletConnected.value = false
-  walletPubkey.value = null
-  walletSigned.value = false
-  walletSignatureValue.value = null
-  walletError.value = null
-  manualPubkey.value = ''
-  manualSignature.value = ''
 }
 
 onMounted(loadIdentity)
@@ -254,9 +225,9 @@ onMounted(loadIdentity)
 <template>
   <div class="space-y-6">
     <div class="flex items-center justify-between">
-      <h1 class="text-2xl font-bold">Verify & Attest</h1>
-      <button v-if="result" @click="reset" class="text-sm text-gray-400 hover:text-white transition-colors cursor-pointer">
-        Upload another file
+      <h1 class="text-2xl font-bold">Attest Content</h1>
+      <button v-if="result || attestResult" @click="reset" class="text-sm text-gray-400 hover:text-white transition-colors cursor-pointer">
+        Start over
       </button>
     </div>
 
@@ -266,6 +237,7 @@ onMounted(loadIdentity)
         <span class="text-gray-500">Attesting as</span>
         <span class="text-gray-200 font-medium">{{ identityLabel }}</span>
         <span class="text-xs text-gray-600">({{ loggedInUser.type === 'org' ? 'org' : loggedInUser.auth_method }})</span>
+        <span v-if="isPrivacyMode" class="text-xs bg-purple-900/50 text-purple-400 px-2 py-0.5 rounded-full border border-purple-800/50">Private</span>
       </div>
       <router-link to="/account" class="text-xs text-gray-500 hover:text-gray-300 transition-colors">Account</router-link>
     </div>
@@ -274,44 +246,61 @@ onMounted(loadIdentity)
       <router-link to="/account" class="text-xs text-gray-500 hover:text-gray-300 transition-colors">Sign in</router-link>
     </div>
 
-    <!-- Upload -->
-    <FileUpload v-if="!result" @verified="onVerified" />
+    <!-- Tab bar -->
+    <div v-if="!result && !attestResult" class="flex gap-1 bg-gray-900 rounded-lg p-1 border border-gray-800">
+      <button
+        v-for="tab in ([
+          { key: 'file', label: 'File Upload' },
+          { key: 'url', label: 'URL' },
+          { key: 'text', label: 'Text' },
+        ] as { key: TabMode; label: string }[])"
+        :key="tab.key"
+        @click="activeTab = tab.key"
+        :class="[
+          'flex-1 py-2 text-sm font-medium rounded-md transition-colors cursor-pointer',
+          activeTab === tab.key ? 'bg-gray-800 text-white' : 'text-gray-500 hover:text-gray-300',
+        ]"
+      >{{ tab.label }}</button>
+    </div>
 
-    <!-- Results -->
-    <template v-if="result">
-      <!-- File name -->
-      <div class="flex items-center gap-3">
-        <span class="text-sm text-gray-500">{{ file?.name }}</span>
-      </div>
+    <!-- ═══ File Upload Tab ═══ -->
+    <template v-if="activeTab === 'file' && !attestResult">
+      <FileUpload v-if="!result" @verified="onVerified" />
 
-      <!-- Report card -->
-      <div :class="['bg-gray-900 rounded-lg border overflow-hidden', signerConfig.borderColor]">
-        <div class="px-4 py-3 border-b border-gray-800">
-          <span :class="['text-sm font-semibold', signerConfig.color]">{{ signerConfig.label }}</span>
-          <p class="text-xs text-gray-500 mt-0.5">{{ signerConfig.desc }}</p>
+      <template v-if="result">
+        <div class="flex items-center gap-3">
+          <span class="text-sm text-gray-500">{{ file?.name }}</span>
         </div>
 
-        <div class="divide-y divide-gray-800">
-          <div v-if="result.format" class="flex items-center px-4 py-3">
-            <span class="text-gray-400 w-44 shrink-0 text-sm">Media Type</span>
-            <span class="text-sm text-gray-100">{{ result.format }}</span>
-          </div>
-          <div v-if="sourceTypeLabel" class="flex px-4 py-3">
-            <span class="text-gray-400 w-44 shrink-0 text-sm">Source Type</span>
-            <div>
-              <span :class="['text-sm font-medium', sourceTypeColor]">{{ sourceTypeLabel }}</span>
-              <p class="text-xs text-gray-600 mt-0.5 break-all">{{ result.digital_source_type }}</p>
-            </div>
-          </div>
-          <div v-if="result.content_hash" class="flex items-center px-4 py-3">
-            <span class="text-gray-400 w-44 shrink-0 text-sm">Content Hash</span>
-            <span class="text-sm font-mono text-gray-300 break-all flex-1">{{ result.content_hash }}</span>
-            <button @click="copyToClipboard(result.content_hash!, 'hash')" class="shrink-0 ml-2 text-gray-500 hover:text-gray-300 cursor-pointer">
-              <span v-if="copiedField === 'hash'" class="text-green-400 text-xs">Copied</span>
+        <!-- Content hash hero -->
+        <div v-if="result.content_hash" class="bg-gray-900 rounded-lg border border-gray-800 p-4">
+          <div class="flex items-center justify-between mb-2">
+            <span class="text-xs text-gray-500 uppercase tracking-wider">Content Hash</span>
+            <button @click="copyToClipboard(result.content_hash!, 'hash')" class="text-gray-500 hover:text-gray-300 cursor-pointer">
+              <span v-if="copiedField === 'hash'" class="text-green-400 text-xs">Copied!</span>
               <svg v-else xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
                 <rect x="9" y="9" width="13" height="13" rx="2" ry="2" /><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1" />
               </svg>
             </button>
+          </div>
+          <p class="text-sm font-mono text-gray-200 break-all">{{ result.content_hash }}</p>
+        </div>
+
+        <!-- Details table -->
+        <div class="bg-gray-900 rounded-lg border border-gray-800 overflow-hidden divide-y divide-gray-800">
+          <div v-if="result.format" class="flex items-center px-4 py-3">
+            <span class="text-gray-400 w-44 shrink-0 text-sm">Media Type</span>
+            <span class="text-sm text-gray-100">{{ result.format }}</span>
+          </div>
+
+          <!-- C2PA fields (only if present) -->
+          <div v-if="result.has_c2pa" class="flex items-center px-4 py-3">
+            <span class="text-gray-400 w-44 shrink-0 text-sm">C2PA Signer</span>
+            <span :class="['text-sm font-medium', signerConfig.color]">{{ signerConfig.label }}</span>
+          </div>
+          <div v-if="sourceTypeLabel" class="flex px-4 py-3">
+            <span class="text-gray-400 w-44 shrink-0 text-sm">Source Type</span>
+            <span :class="['text-sm', sourceTypeColor]">{{ sourceTypeLabel }}</span>
           </div>
           <div v-if="result.issuer" class="flex items-center px-4 py-3">
             <span class="text-gray-400 w-44 shrink-0 text-sm">Issuer</span>
@@ -352,162 +341,183 @@ onMounted(loadIdentity)
             </div>
           </div>
         </div>
-      </div>
 
-      <!-- ═══ Optional: Wallet Identity ═══ -->
-      <div v-if="!attestResult" class="bg-gray-900 rounded-lg border border-gray-800 p-5 space-y-3">
-        <div>
-          <p class="text-sm font-semibold text-gray-100">Wallet Identity <span class="text-xs font-normal text-gray-500">(optional)</span></p>
-          <p class="text-xs text-gray-500 mt-1">Bind your Solana wallet pubkey to this file.</p>
-        </div>
-
-        <!-- Mode chooser -->
-        <template v-if="walletMode === 'choose' && !walletSigned">
-          <button
-            v-if="hasPhantom"
-            @click="walletMode = 'phantom'"
-            class="w-full py-2.5 bg-purple-600 hover:bg-purple-500 rounded-lg text-sm font-medium transition-colors cursor-pointer"
-          >
-            Connect Phantom Wallet
-          </button>
-          <button
-            @click="walletMode = 'manual'"
-            :class="[
-              'w-full py-2.5 rounded-lg text-sm font-medium transition-colors cursor-pointer',
-              hasPhantom ? 'bg-gray-800 hover:bg-gray-700 text-gray-300' : 'bg-purple-600 hover:bg-purple-500 text-white',
-            ]"
-          >
-            Enter Key Manually
-          </button>
-        </template>
-
-        <!-- Phantom flow -->
-        <template v-if="walletMode === 'phantom' && !walletSigned">
-          <template v-if="!walletConnected">
-            <button
-              @click="connectPhantom"
-              class="w-full py-2.5 bg-purple-600 hover:bg-purple-500 rounded-lg text-sm font-medium transition-colors cursor-pointer"
-            >
-              Connect Phantom
-            </button>
-          </template>
-          <template v-else>
-            <div class="flex items-center gap-2">
-              <span class="text-green-400">&#10003;</span>
-              <span class="text-sm text-gray-300">{{ walletPubkey?.slice(0, 4) }}...{{ walletPubkey?.slice(-4) }}</span>
+        <!-- Private mode toggle + Attest button -->
+        <div class="space-y-3">
+          <div class="flex items-center justify-between bg-gray-900 rounded-lg border border-gray-800 px-4 py-2.5">
+            <div>
+              <span class="text-sm text-gray-300">Private attestation</span>
+              <p class="text-xs text-gray-600">Store in database only — not on Solana or public search.</p>
             </div>
-            <button
-              @click="signWithPhantom"
-              :disabled="walletLoading"
-              :class="[
-                'w-full py-2.5 rounded-lg text-sm font-medium transition-colors',
-                !walletLoading ? 'bg-purple-600 hover:bg-purple-500 text-white cursor-pointer' : 'bg-gray-800 text-gray-500 cursor-not-allowed',
-              ]"
-            >
-              {{ walletLoading ? 'Signing...' : 'Sign Message' }}
+            <button @click="privateMode = !privateMode" :class="['relative inline-flex h-5 w-9 items-center rounded-full transition-colors cursor-pointer', privateMode ? 'bg-purple-600' : 'bg-gray-700']">
+              <span :class="['inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform', privateMode ? 'translate-x-4.5' : 'translate-x-0.5']" />
             </button>
-          </template>
-          <button @click="walletMode = 'choose'; walletConnected = false; walletPubkey = null" class="w-full text-xs text-gray-500 hover:text-gray-300 transition-colors cursor-pointer">Cancel</button>
-        </template>
-
-        <!-- Manual flow -->
-        <template v-if="walletMode === 'manual' && !walletSigned">
-          <input
-            v-model="manualPubkey"
-            type="text"
-            placeholder="Pubkey (base58)"
-            class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white font-mono placeholder-gray-600 focus:border-purple-500 focus:outline-none"
-          />
-          <div class="bg-gray-800 rounded-lg px-3 py-2">
-            <p class="text-xs text-gray-500 mb-1">Sign this message with your wallet:</p>
-            <p class="text-xs font-mono text-purple-300 break-all select-all">{{ walletMessage }}</p>
           </div>
-          <input
-            v-model="manualSignature"
-            type="text"
-            placeholder="Signature (base58)"
-            class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white font-mono placeholder-gray-600 focus:border-purple-500 focus:outline-none"
-          />
           <button
-            @click="submitManualWallet"
-            :disabled="!manualPubkey || !manualSignature"
-            :class="[
-              'w-full py-2.5 rounded-lg text-sm font-medium transition-colors',
-              manualPubkey && manualSignature
-                ? 'bg-purple-600 hover:bg-purple-500 text-white cursor-pointer'
-                : 'bg-gray-800 text-gray-500 cursor-not-allowed',
-            ]"
+            @click="attestFileHandler"
+            :disabled="attesting"
+            :class="['w-full py-3 disabled:opacity-50 rounded-lg text-sm font-medium transition-colors cursor-pointer', privateMode ? 'bg-purple-600 hover:bg-purple-500' : 'bg-blue-600 hover:bg-blue-500']"
           >
-            Confirm
+            {{ attesting ? (privateMode ? 'Storing privately...' : 'Attesting on Solana...') : (privateMode ? 'Store Private Attestation' : 'Attest on Solana') }}
           </button>
-          <button @click="walletMode = 'choose'" class="w-full text-xs text-gray-500 hover:text-gray-300 transition-colors cursor-pointer">Cancel</button>
-        </template>
-
-        <div v-if="walletSigned" class="flex items-center gap-2">
-          <span class="text-green-400">&#10003;</span>
-          <span class="text-sm text-green-400 font-medium">Wallet {{ walletPubkey?.slice(0, 4) }}...{{ walletPubkey?.slice(-4) }} signed</span>
+          <p class="text-xs text-gray-600 text-center">
+            {{ privateMode ? 'Stores a private record in the database. Not visible publicly.' : 'Stores a permanent on-chain record of this verification.' }}
+          </p>
+          <p v-if="attestError" class="text-red-400 text-sm text-center">{{ attestError }}</p>
         </div>
+      </template>
+    </template>
 
-        <p v-if="walletError" class="text-red-400 text-xs">{{ walletError }}</p>
-      </div>
-
-      <!-- ═══ Attest Button ═══ -->
-      <div v-if="!attestResult" class="space-y-3">
+    <!-- ═══ URL Tab ═══ -->
+    <template v-if="activeTab === 'url' && !attestResult">
+      <div class="space-y-4">
+        <p class="text-sm text-gray-400">
+          Fetch a URL and create an on-chain attestation of its content at this point in time.
+        </p>
+        <div>
+          <label class="block text-sm text-gray-400 mb-2">URL to attest</label>
+          <input
+            v-model="urlInput"
+            type="url"
+            placeholder="https://example.com/article..."
+            class="w-full bg-gray-900 border border-gray-700 rounded-lg px-4 py-2.5 text-sm text-gray-200 placeholder-gray-600 focus:border-blue-500 focus:outline-none"
+          />
+        </div>
+        <div>
+          <button
+            @click="showUrlHeaders = !showUrlHeaders"
+            class="text-xs text-gray-500 hover:text-gray-300 transition-colors cursor-pointer flex items-center gap-1"
+          >
+            <span :class="showUrlHeaders ? 'rotate-90' : ''" class="inline-block transition-transform">&#9654;</span>
+            Auth headers (optional)
+          </button>
+          <div v-if="showUrlHeaders" class="mt-2">
+            <textarea
+              v-model="urlHeadersRaw"
+              rows="3"
+              placeholder="Authorization: Bearer your-token&#10;Cookie: session=abc123"
+              class="w-full bg-gray-900 border border-gray-700 rounded-lg px-4 py-2.5 text-sm text-gray-200 placeholder-gray-600 focus:border-blue-500 focus:outline-none resize-y font-mono"
+            ></textarea>
+            <p class="text-xs text-gray-600 mt-1">One header per line as Key: Value. Forwarded when fetching the URL.</p>
+          </div>
+        </div>
+        <div class="flex items-center justify-between bg-gray-900 rounded-lg border border-gray-800 px-4 py-2.5">
+          <div>
+            <span class="text-sm text-gray-300">Private attestation</span>
+            <p class="text-xs text-gray-600">Store in database only — not on Solana or public search.</p>
+          </div>
+          <button @click="privateMode = !privateMode" :class="['relative inline-flex h-5 w-9 items-center rounded-full transition-colors cursor-pointer', privateMode ? 'bg-purple-600' : 'bg-gray-700']">
+            <span :class="['inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform', privateMode ? 'translate-x-4.5' : 'translate-x-0.5']" />
+          </button>
+        </div>
         <button
-          @click="attestAll"
-          :disabled="attesting"
-          class="w-full py-3 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 rounded-lg text-sm font-medium transition-colors cursor-pointer"
+          @click="attestUrlHandler"
+          :disabled="attesting || !urlInput.trim()"
+          :class="['w-full py-3 disabled:opacity-50 rounded-lg text-sm font-medium transition-colors cursor-pointer', privateMode ? 'bg-purple-600 hover:bg-purple-500' : 'bg-blue-600 hover:bg-blue-500']"
         >
-          {{ attesting ? 'Attesting on Solana...' : 'Attest on Solana' }}
+          {{ attesting ? 'Fetching & Attesting...' : (privateMode ? 'Fetch & Store Privately' : 'Fetch & Attest on Solana') }}
         </button>
         <p class="text-xs text-gray-600 text-center">
-          Stores a permanent on-chain record of this verification{{ walletSigned ? ' + wallet' : '' }}.
+          {{ privateMode ? 'Fetches the URL, hashes the content, and stores a private record.' : 'Fetches the URL, hashes the content, and stores a permanent on-chain attestation.' }}
         </p>
         <p v-if="attestError" class="text-red-400 text-sm text-center">{{ attestError }}</p>
       </div>
+    </template>
 
-      <!-- ═══ On-chain Results ═══ -->
-      <div v-if="attestResult" class="space-y-4">
-        <h2 class="text-lg font-semibold">On-chain Result</h2>
-
-        <div class="bg-gray-900 rounded-lg border border-green-900 p-4 space-y-2">
-          <div class="flex items-center gap-2">
-            <span class="text-green-400">&#10003;</span>
-            <span class="text-sm text-green-400 font-medium">
-              {{ attestResult.existing ? 'Attestation already exists' : 'Attestation recorded on Solana' }}
-            </span>
-          </div>
-          <div class="space-y-1">
-            <div class="flex items-center gap-2">
-              <span class="text-xs text-gray-500 w-20 shrink-0">Tx</span>
-              <span class="text-xs font-mono text-gray-300 truncate flex-1">{{ attestResult.signature || '(existing)' }}</span>
-              <button v-if="attestResult.signature" @click="copyToClipboard(attestResult.signature, 'tx')" class="shrink-0 text-gray-500 hover:text-gray-300 cursor-pointer">
-                <span v-if="copiedField === 'tx'" class="text-green-400 text-xs">Copied</span>
-                <span v-else class="text-xs">Copy</span>
-              </button>
-            </div>
-            <div class="flex items-center gap-2">
-              <span class="text-xs text-gray-500 w-20 shrink-0">PDA</span>
-              <span class="text-xs font-mono text-gray-300 truncate flex-1">{{ attestResult.attestation_pda }}</span>
-              <button @click="copyToClipboard(attestResult.attestation_pda, 'pda')" class="shrink-0 text-gray-500 hover:text-gray-300 cursor-pointer">
-                <span v-if="copiedField === 'pda'" class="text-green-400 text-xs">Copied</span>
-                <span v-else class="text-xs">Copy</span>
-              </button>
-            </div>
-            <div v-if="attestResult.wallet_pubkey" class="flex items-center gap-2">
-              <span class="text-xs text-gray-500 w-20 shrink-0">Wallet</span>
-              <span class="text-xs font-mono text-purple-400">{{ attestResult.wallet_pubkey }}</span>
-            </div>
-          </div>
+    <!-- ═══ Text Tab ═══ -->
+    <template v-if="activeTab === 'text' && !attestResult">
+      <div class="space-y-4">
+        <p class="text-sm text-gray-400">
+          Attest any text content — CSV data, JSON, API responses, articles, or any plaintext.
+        </p>
+        <div>
+          <label class="block text-sm text-gray-400 mb-2">Title (optional)</label>
+          <input
+            v-model="textTitle"
+            type="text"
+            placeholder="e.g. API response from example.com"
+            class="w-full bg-gray-900 border border-gray-700 rounded-lg px-4 py-2.5 text-sm text-gray-200 placeholder-gray-600 focus:border-blue-500 focus:outline-none"
+          />
         </div>
-
-        <router-link
-          :to="'/search/' + attestResult.content_hash"
-          class="inline-block text-sm text-blue-400 hover:text-blue-300 transition-colors"
+        <div>
+          <label class="block text-sm text-gray-400 mb-2">Content</label>
+          <textarea
+            v-model="textInput"
+            rows="8"
+            placeholder="Paste text, CSV, JSON, or any content here..."
+            class="w-full bg-gray-900 border border-gray-700 rounded-lg px-4 py-2.5 text-sm text-gray-200 placeholder-gray-600 focus:border-blue-500 focus:outline-none resize-y font-mono"
+          ></textarea>
+        </div>
+        <div class="flex items-center justify-between bg-gray-900 rounded-lg border border-gray-800 px-4 py-2.5">
+          <div>
+            <span class="text-sm text-gray-300">Private attestation</span>
+            <p class="text-xs text-gray-600">Store in database only — not on Solana or public search.</p>
+          </div>
+          <button @click="privateMode = !privateMode" :class="['relative inline-flex h-5 w-9 items-center rounded-full transition-colors cursor-pointer', privateMode ? 'bg-purple-600' : 'bg-gray-700']">
+            <span :class="['inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform', privateMode ? 'translate-x-4.5' : 'translate-x-0.5']" />
+          </button>
+        </div>
+        <button
+          @click="attestTextHandler"
+          :disabled="attesting || !textInput.trim()"
+          :class="['w-full py-3 disabled:opacity-50 rounded-lg text-sm font-medium transition-colors cursor-pointer', privateMode ? 'bg-purple-600 hover:bg-purple-500' : 'bg-blue-600 hover:bg-blue-500']"
         >
-          View attestation &rarr;
-        </router-link>
+          {{ attesting ? (privateMode ? 'Storing privately...' : 'Attesting on Solana...') : (privateMode ? 'Store Private Attestation' : 'Attest on Solana') }}
+        </button>
+        <p class="text-xs text-gray-600 text-center">
+          {{ privateMode ? 'Hashes the text content and stores a private record.' : 'Hashes the text content and stores a permanent on-chain attestation.' }}
+        </p>
+        <p v-if="attestError" class="text-red-400 text-sm text-center">{{ attestError }}</p>
       </div>
     </template>
+
+    <!-- ═══ Results (shared across all tabs) ═══ -->
+    <div v-if="attestResult" class="space-y-4">
+      <h2 class="text-lg font-semibold">{{ attestResult.private ? 'Private Attestation' : 'On-chain Result' }}</h2>
+
+      <div :class="['bg-gray-900 rounded-lg border p-4 space-y-2', attestResult.private ? 'border-purple-900' : 'border-green-900']">
+        <div class="flex items-center gap-2">
+          <span :class="attestResult.private ? 'text-purple-400' : 'text-green-400'">&#10003;</span>
+          <span :class="['text-sm font-medium', attestResult.private ? 'text-purple-400' : 'text-green-400']">
+            {{ attestResult.existing ? 'Attestation already exists' : attestResult.private ? 'Private attestation recorded (database only)' : 'Attestation recorded on Solana' }}
+          </span>
+        </div>
+        <div class="space-y-1">
+          <div v-if="!attestResult.private" class="flex items-center gap-2">
+            <span class="text-xs text-gray-500 w-20 shrink-0">Tx</span>
+            <span class="text-xs font-mono text-gray-300 truncate flex-1">{{ attestResult.signature || '(existing)' }}</span>
+            <button v-if="attestResult.signature" @click="copyToClipboard(attestResult.signature, 'tx')" class="shrink-0 text-gray-500 hover:text-gray-300 cursor-pointer">
+              <span v-if="copiedField === 'tx'" class="text-green-400 text-xs">Copied</span>
+              <span v-else class="text-xs">Copy</span>
+            </button>
+          </div>
+          <div v-if="attestResult.attestation_pda" class="flex items-center gap-2">
+            <span class="text-xs text-gray-500 w-20 shrink-0">PDA</span>
+            <span class="text-xs font-mono text-gray-300 truncate flex-1">{{ attestResult.attestation_pda }}</span>
+            <button @click="copyToClipboard(attestResult.attestation_pda!, 'pda')" class="shrink-0 text-gray-500 hover:text-gray-300 cursor-pointer">
+              <span v-if="copiedField === 'pda'" class="text-green-400 text-xs">Copied</span>
+              <span v-else class="text-xs">Copy</span>
+            </button>
+          </div>
+          <div class="flex items-center gap-2">
+            <span class="text-xs text-gray-500 w-20 shrink-0">Hash</span>
+            <span class="text-xs font-mono text-gray-300 truncate flex-1">{{ attestResult.content_hash }}</span>
+            <button @click="copyToClipboard(attestResult.content_hash, 'content_hash')" class="shrink-0 text-gray-500 hover:text-gray-300 cursor-pointer">
+              <span v-if="copiedField === 'content_hash'" class="text-green-400 text-xs">Copied</span>
+              <span v-else class="text-xs">Copy</span>
+            </button>
+          </div>
+        </div>
+        <p v-if="attestResult.private" class="text-xs text-gray-600 mt-2">This attestation is stored privately and won't appear in public searches or on-chain.</p>
+      </div>
+
+      <router-link
+        v-if="!attestResult.private"
+        :to="'/search/' + attestResult.content_hash"
+        class="inline-block text-sm text-blue-400 hover:text-blue-300 transition-colors"
+      >
+        View attestation &rarr;
+      </router-link>
+    </div>
   </div>
 </template>

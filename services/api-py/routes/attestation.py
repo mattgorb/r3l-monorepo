@@ -13,6 +13,8 @@ router = APIRouter()
 async def lookup(hash: str):
     # Try DB first
     row = await db.get_attestation(hash)
+    if row and row.get("private", False):
+        raise HTTPException(404, "attestation not found")
     if row:
         result = {
             "content_hash": row["content_hash"],
@@ -39,6 +41,14 @@ async def lookup(hash: str):
             result["trust_bundle_hash"] = row["trust_bundle_hash"]
         if row.get("org_domain"):
             result["org_domain"] = row["org_domain"]
+        result["content_type"] = row.get("content_type", "file")
+        if row.get("source_url"):
+            result["source_url"] = row["source_url"]
+        if row.get("mime_type"):
+            result["mime_type"] = row["mime_type"]
+        if row.get("content_size"):
+            result["content_size"] = row["content_size"]
+        result["stored"] = row.get("stored", False)
         return result
 
     # Fall back to on-chain lookup
@@ -71,5 +81,9 @@ async def list_all():
             item["wallet_pubkey"] = row["wallet_pubkey"]
         if row.get("org_domain"):
             item["org_domain"] = row["org_domain"]
+        item["content_type"] = row.get("content_type", "file")
+        if row.get("source_url"):
+            item["source_url"] = row["source_url"]
+        item["stored"] = row.get("stored", False)
         items.append(item)
     return items

@@ -12,7 +12,7 @@ router = APIRouter()
 
 MAX_FILE_SIZE = 50 * 1024 * 1024  # 50 MB
 ALLOWED_MIME_PREFIXES = ("image/", "video/", "audio/", "application/pdf", "text/")
-VERIFIER_TIMEOUT = 30  # seconds
+VERIFIER_TIMEOUT = 60  # seconds
 
 
 def validate_upload(file_bytes: bytes, content_type: str | None = None):

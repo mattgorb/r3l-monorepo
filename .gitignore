@@ -26,3 +26,4 @@ docker/.solana-keypair.json
 # IDE / tooling
 .claude/
 __pycache__/
+data/storage/

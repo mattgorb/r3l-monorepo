@@ -12,9 +12,9 @@ const isActive = (path: string) => route.path === path || route.path.startsWith(
         <router-link to="/" class="text-lg font-bold tracking-tight hover:text-white">R3L</router-link>
         <div class="flex gap-6">
           <router-link
-            to="/verify"
-            :class="['text-sm transition-colors', isActive('/verify') ? 'text-white font-medium' : 'text-gray-400 hover:text-white']"
-          >Verify</router-link>
+            to="/attest"
+            :class="['text-sm transition-colors', isActive('/attest') ? 'text-white font-medium' : 'text-gray-400 hover:text-white']"
+          >Attest</router-link>
           <router-link
             to="/search"
             :class="['text-sm transition-colors', isActive('/search') ? 'text-white font-medium' : 'text-gray-400 hover:text-white']"

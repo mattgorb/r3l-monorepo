@@ -1,10 +1,12 @@
 """R3L Edge Node CLI — verify files locally, attest on-chain via the R3L API.
 
 Usage:
-  r3l-edge register [--name NAME] [--keypair PATH] [--api URL]
-  r3l-edge attest   <file> [--keypair PATH] [--api URL] [--api-key KEY]
-  r3l-edge lookup   <hash> [--api URL]
-  r3l-edge query    <hash> [--api URL]
+  r3l-edge register    [--name NAME] [--keypair PATH] [--api URL]
+  r3l-edge attest      <file> [--keypair PATH] [--api URL] [--api-key KEY]
+  r3l-edge attest-url  <url> [--api URL] [--api-key KEY] [--no-store] [--header K:V]
+  r3l-edge attest-text <text> [--title TITLE] [--api URL] [--api-key KEY] [--no-store]
+  r3l-edge lookup      <hash> [--api URL]
+  r3l-edge query       <hash> [--api URL]
 
 Environment variables (alternative to flags):
   R3L_API_URL    — API base URL (default: http://localhost:3001)
@@ -129,6 +131,78 @@ def cmd_attest(args):
         print(f"  Wallet:       {resp['wallet_pubkey']}")
 
 
+def cmd_attest_url(args):
+    api_key = args.api_key or _env("R3L_API_KEY")
+    if not api_key:
+        print("No API key. Set R3L_API_KEY or pass --api-key, or run 'r3l-edge register' first.", file=sys.stderr)
+        sys.exit(1)
+
+    client = R3LEdgeClient(
+        api_url=args.api or _env("R3L_API_URL", "http://localhost:3001"),
+        api_key=api_key,
+    )
+
+    # Parse --header flags into dict
+    headers = None
+    if args.header:
+        headers = {}
+        for h in args.header:
+            idx = h.find(":")
+            if idx <= 0:
+                print(f"Invalid header (expected 'Key: Value'): {h}", file=sys.stderr)
+                sys.exit(1)
+            headers[h[:idx].strip()] = h[idx + 1:].strip()
+
+    print(f"Attesting URL: {args.url}")
+    try:
+        resp = client.attest_url(args.url, store_content=not args.no_store, headers=headers)
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    if resp.get("existing"):
+        print(f"\nAttestation already exists:")
+    else:
+        print(f"\nAttestation created:")
+    print(f"  Content hash: {resp['content_hash']}")
+    print(f"  PDA:          {resp['attestation_pda']}")
+    if resp.get("signature"):
+        print(f"  Tx signature: {resp['signature']}")
+
+
+def cmd_attest_text(args):
+    api_key = args.api_key or _env("R3L_API_KEY")
+    if not api_key:
+        print("No API key. Set R3L_API_KEY or pass --api-key, or run 'r3l-edge register' first.", file=sys.stderr)
+        sys.exit(1)
+
+    client = R3LEdgeClient(
+        api_url=args.api or _env("R3L_API_URL", "http://localhost:3001"),
+        api_key=api_key,
+    )
+
+    # Read from stdin if text is "-"
+    text = args.text
+    if text == "-":
+        text = sys.stdin.read()
+
+    print(f"Attesting text ({len(text)} chars)...")
+    try:
+        resp = client.attest_text(text, title=args.title, store_content=not args.no_store)
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    if resp.get("existing"):
+        print(f"\nAttestation already exists:")
+    else:
+        print(f"\nAttestation created:")
+    print(f"  Content hash: {resp['content_hash']}")
+    print(f"  PDA:          {resp['attestation_pda']}")
+    if resp.get("signature"):
+        print(f"  Tx signature: {resp['signature']}")
+
+
 def cmd_lookup(args):
     client = R3LEdgeClient(api_url=args.api or _env("R3L_API_URL", "http://localhost:3001"))
     resp = client.lookup(args.hash)
@@ -163,6 +237,23 @@ def main():
     att.add_argument("--verifier", help="Path to verifier binary (default: auto-detect or $R3L_VERIFIER)")
     att.add_argument("--trust-dir", help="Path to trust directory (default: auto-detect or $R3L_TRUST_DIR)")
 
+    # attest-url
+    au = sub.add_parser("attest-url", help="Attest a URL (API fetches and hashes the content)")
+    au.add_argument("url", help="URL to attest")
+    au.add_argument("--api", help="API URL")
+    au.add_argument("--api-key", help="API key (default: $R3L_API_KEY)")
+    au.add_argument("--no-store", action="store_true", help="Don't store content on the server")
+    au.add_argument("--header", "-H", action="append", metavar="KEY:VALUE",
+                    help="Header forwarded when fetching the URL (repeatable, e.g. -H 'Authorization: Bearer tok')")
+
+    # attest-text
+    at = sub.add_parser("attest-text", help="Attest text content (use '-' to read from stdin)")
+    at.add_argument("text", help="Text to attest (use '-' to read from stdin)")
+    at.add_argument("--title", help="Optional title for the text")
+    at.add_argument("--api", help="API URL")
+    at.add_argument("--api-key", help="API key (default: $R3L_API_KEY)")
+    at.add_argument("--no-store", action="store_true", help="Don't store content on the server")
+
     # lookup
     lk = sub.add_parser("lookup", help="Look up attestation by content hash (raw)")
     lk.add_argument("hash", help="Content hash (hex)")
@@ -178,4 +269,12 @@ def main():
         parser.print_help()
         sys.exit(0)
 
-    {"register": cmd_register, "attest": cmd_attest, "lookup": cmd_lookup, "query": cmd_query}[args.command](args)
+    cmds = {
+        "register": cmd_register,
+        "attest": cmd_attest,
+        "attest-url": cmd_attest_url,
+        "attest-text": cmd_attest_text,
+        "lookup": cmd_lookup,
+        "query": cmd_query,
+    }
+    cmds[args.command](args)

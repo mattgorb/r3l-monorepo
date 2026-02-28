@@ -34,6 +34,12 @@ class Attestation(Base):
     trust_bundle_hash: Mapped[str | None] = mapped_column(String)
     tlsh_hash: Mapped[str | None] = mapped_column(String)
     clip_embedding = Column(Vector(512), nullable=True)
+    content_type: Mapped[str] = mapped_column(String, nullable=False, default="file")
+    source_url: Mapped[str | None] = mapped_column(String)
+    mime_type: Mapped[str | None] = mapped_column(String)
+    content_size: Mapped[int | None] = mapped_column(Integer)
+    stored: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    private: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
 
     def to_dict(self) -> dict:
@@ -57,6 +63,7 @@ class Customer(Base):
     wallet_pubkey: Mapped[str | None] = mapped_column(String, unique=True)
     api_key: Mapped[str] = mapped_column(String, unique=True, nullable=False)
     org_id: Mapped[int | None] = mapped_column(Integer)
+    privacy_mode: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
 
     def to_dict(self) -> dict:

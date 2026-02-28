@@ -9,6 +9,7 @@ from solders.message import Message
 from solders.pubkey import Pubkey
 from solders.transaction import Transaction
 from solana.rpc.api import Client as SolanaClient
+from solana.rpc.commitment import Confirmed
 
 SYSTEM_PROGRAM_ID = Pubkey.from_string("11111111111111111111111111111111")
 ED25519_PROGRAM_ID = Pubkey.from_string("Ed25519SigVerify111111111111111111111111111")
@@ -188,6 +189,6 @@ def build_and_send_tx(
     result = client.send_transaction(tx)
     sig = str(result.value)
 
-    client.confirm_transaction(result.value)
+    client.confirm_transaction(result.value, commitment=Confirmed)
 
     return sig, str(pda)

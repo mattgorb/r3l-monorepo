@@ -10,6 +10,9 @@ if [[ "$1" == "--reset-db" || "$1" == "-r" ]]; then
   docker exec r3l-postgres psql -U postgres -c "DROP DATABASE IF EXISTS r3l;" 2>/dev/null || true
   docker exec r3l-postgres psql -U postgres -c "CREATE DATABASE r3l;" 2>/dev/null || true
   echo "Database reset."
+  echo "Clearing local storage..."
+  rm -rf data/storage/*
+  echo "Storage cleared."
 fi
 
 # Build frontend
@@ -92,6 +95,8 @@ PROGRAM_ID="$PROGRAM_ID" \
   SOLANA_RPC_URL="http://127.0.0.1:8899" \
   STATIC_DIR="../web/dist" \
   DATABASE_URL="postgresql://postgres:postgres@localhost:5432/r3l" \
+  STORAGE_BACKEND="local" \
+  STORAGE_DIR="../../data/storage" \
   python3 -m uvicorn main:app --host 0.0.0.0 --port 3001 --reload &
 API_PID=$!
 cd ../..

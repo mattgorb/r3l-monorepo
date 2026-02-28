@@ -17,3 +17,5 @@ pgvector
 timm
 pillow
 PyMuPDF
+boto3
+httpx

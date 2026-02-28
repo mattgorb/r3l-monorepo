@@ -2,7 +2,7 @@
 import { ref, onMounted, computed } from 'vue'
 import {
   authEmailStart, authEmailVerify, authWalletChallenge, authWalletVerify, getMe,
-  linkEmailStart, linkEmailVerify, linkWallet,
+  linkEmailStart, linkEmailVerify, linkWallet, updatePrivacyMode,
   registerOrg, verifyOrgDns, verifyOrgEmail, resendOrgCode,
   createOrgKey, listOrgKeys, revokeOrgKey,
 } from '../api'
@@ -137,10 +137,6 @@ async function handleEmailVerify() {
     emailError.value = detail
     emailCode.value = ''
     if (status === 429 || status === 410) emailLocked.value = true
-    if (status === 409) {
-      emailLocked.value = true
-      emailPending.value = false
-    }
   } finally {
     loading.value = false
   }
@@ -206,7 +202,6 @@ async function signAndVerifyPhantom() {
   } catch (e: any) {
     const detail = e.response?.data?.detail || e.message || 'Wallet verification failed'
     walletError.value = detail
-    if (e.response?.status === 409) walletMode.value = 'choose'
   } finally {
     walletLoading.value = false
   }
@@ -228,7 +223,6 @@ async function handleManualWallet() {
   } catch (e: any) {
     const detail = e.response?.data?.detail || 'Wallet verification failed'
     walletError.value = detail
-    if (e.response?.status === 409) walletMode.value = 'choose'
   } finally {
     walletLoading.value = false
   }
@@ -251,7 +245,14 @@ async function handleOrgRegister() {
     pendingVerify.value = resp
     orgEmailCode.value = ''
   } catch (e: any) {
-    error.value = e.response?.data?.detail || 'Registration failed'
+    const detail = e.response?.data?.detail || 'Registration failed'
+    // If backend says domain is verified and needs email, switch to email method
+    if (e.response?.status === 400 && detail.includes('email verification to log in')) {
+      regMethod.value = 'email'
+      error.value = 'This domain is already verified. Enter an admin email to log in.'
+    } else {
+      error.value = detail
+    }
   } finally {
     loading.value = false
   }
@@ -352,6 +353,24 @@ async function handleRevoke(keyId: number) {
     await loadOrgKeys()
   } catch (e: any) {
     error.value = e.response?.data?.detail || 'Failed to revoke key'
+  }
+}
+
+// ── Privacy mode ────────────────────────────────────────────────────
+
+const privacyLoading = ref(false)
+
+async function togglePrivacyMode() {
+  if (!userInfo.value || userInfo.value.type !== 'individual') return
+  privacyLoading.value = true
+  try {
+    const newValue = !userInfo.value.privacy_mode
+    const resp = await updatePrivacyMode(apiKey.value, newValue)
+    userInfo.value = { ...userInfo.value, privacy_mode: resp.privacy_mode }
+  } catch (e: any) {
+    error.value = e.response?.data?.detail || 'Failed to update privacy mode'
+  } finally {
+    privacyLoading.value = false
   }
 }
 
@@ -578,6 +597,30 @@ onMounted(() => {
           </div>
 
           <p class="text-xs text-gray-600">Authenticated via {{ userInfo!.auth_method }}</p>
+
+          <!-- Privacy mode toggle -->
+          <div class="flex items-center justify-between bg-gray-950 rounded-lg px-4 py-3 border border-gray-800">
+            <div>
+              <p class="text-sm text-gray-300">Privacy Mode</p>
+              <p class="text-xs text-gray-600 mt-0.5">Keep your identity off the public Solana ledger.</p>
+            </div>
+            <button
+              @click="togglePrivacyMode"
+              :disabled="privacyLoading"
+              :class="[
+                'relative inline-flex h-6 w-11 items-center rounded-full transition-colors cursor-pointer',
+                userInfo!.privacy_mode ? 'bg-purple-600' : 'bg-gray-700',
+                privacyLoading ? 'opacity-50' : '',
+              ]"
+            >
+              <span
+                :class="[
+                  'inline-block h-4 w-4 transform rounded-full bg-white transition-transform',
+                  userInfo!.privacy_mode ? 'translate-x-6' : 'translate-x-1',
+                ]"
+              />
+            </button>
+          </div>
         </div>
 
         <!-- ── Link email flow ── -->
@@ -815,7 +858,7 @@ onMounted(() => {
 
           <!-- ── Email tab ── -->
           <div v-if="authTab === 'email'" class="space-y-4">
-            <p class="text-sm text-gray-400">Verify your email to create an account and get an API key.</p>
+            <p class="text-sm text-gray-400">Verify your email to sign in or create an account.</p>
 
             <div v-if="emailError" class="bg-red-900/30 border border-red-800 rounded-lg px-4 py-2.5 text-xs text-red-300">
               {{ emailError }}
@@ -862,7 +905,7 @@ onMounted(() => {
 
           <!-- ── Wallet tab ── -->
           <div v-if="authTab === 'wallet'" class="space-y-4">
-            <p class="text-sm text-gray-400">Sign a challenge with your Solana wallet to create an account.</p>
+            <p class="text-sm text-gray-400">Sign a challenge with your Solana wallet to sign in or create an account.</p>
 
             <div v-if="walletError" class="bg-red-900/30 border border-red-800 rounded-lg px-4 py-2.5 text-xs text-red-300">
               {{ walletError }}
@@ -929,7 +972,7 @@ onMounted(() => {
 
           <!-- ── Organization tab ── -->
           <div v-if="authTab === 'org'" class="space-y-5">
-            <p class="text-sm text-gray-400">Register your domain to create an organization account with API keys and DIDs.</p>
+            <p class="text-sm text-gray-400">Register your domain or log in to an existing organization.</p>
 
             <div class="space-y-3">
               <div>

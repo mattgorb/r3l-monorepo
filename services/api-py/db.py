@@ -25,6 +25,13 @@ async def init_db(database_url: str):
             "ALTER TABLE customers ADD COLUMN IF NOT EXISTS auth_method VARCHAR",
             "ALTER TABLE attestations ADD COLUMN IF NOT EXISTS org_id INTEGER",
             "ALTER TABLE attestations ADD COLUMN IF NOT EXISTS org_domain VARCHAR",
+            "ALTER TABLE attestations ADD COLUMN IF NOT EXISTS content_type VARCHAR DEFAULT 'file'",
+            "ALTER TABLE attestations ADD COLUMN IF NOT EXISTS source_url VARCHAR",
+            "ALTER TABLE attestations ADD COLUMN IF NOT EXISTS mime_type VARCHAR",
+            "ALTER TABLE attestations ADD COLUMN IF NOT EXISTS content_size INTEGER",
+            "ALTER TABLE attestations ADD COLUMN IF NOT EXISTS stored BOOLEAN DEFAULT false",
+            "ALTER TABLE customers ADD COLUMN IF NOT EXISTS privacy_mode BOOLEAN DEFAULT false",
+            "ALTER TABLE attestations ADD COLUMN IF NOT EXISTS private BOOLEAN DEFAULT false",
             "CREATE UNIQUE INDEX IF NOT EXISTS ix_customers_email ON customers(email) WHERE email IS NOT NULL",
         ]
         for sql in migrations:
@@ -69,6 +76,12 @@ async def insert_attestation(
     clip_embedding: list[float] | None = None,
     org_id: int | None = None,
     org_domain: str | None = None,
+    content_type: str = "file",
+    source_url: str | None = None,
+    mime_type: str | None = None,
+    content_size: int | None = None,
+    stored: bool = False,
+    private: bool = False,
     created_at: int | None = None,
 ):
     if _session_factory is None:
@@ -105,6 +118,12 @@ async def insert_attestation(
             clip_embedding=clip_embedding,
             org_id=org_id,
             org_domain=org_domain,
+            content_type=content_type,
+            source_url=source_url,
+            mime_type=mime_type,
+            content_size=content_size,
+            stored=stored,
+            private=private,
             created_at=created_at,
         )
         session.add(row)
@@ -124,11 +143,13 @@ async def get_attestation(content_hash: str) -> dict | None:
         return row.to_dict()
 
 
-async def list_attestations() -> list[dict]:
+async def list_attestations(include_private: bool = False) -> list[dict]:
     if _session_factory is None:
         return []
     async with get_session() as session:
         stmt = select(Attestation).order_by(Attestation.created_at.desc())
+        if not include_private:
+            stmt = stmt.where(Attestation.private == False)
         rows = (await session.execute(stmt)).scalars().all()
         return [r.to_dict() for r in rows]
 
@@ -210,6 +231,55 @@ async def link_wallet_to_customer(customer_id: int, wallet_pubkey: str):
             raise RuntimeError("customer not found")
         row.wallet_pubkey = wallet_pubkey
         await session.commit()
+
+
+async def update_customer_privacy_mode(customer_id: int, privacy_mode: bool) -> dict:
+    if _session_factory is None:
+        raise RuntimeError("DB not initialized")
+    async with get_session() as session:
+        stmt = select(Customer).where(Customer.id == customer_id)
+        row = (await session.execute(stmt)).scalar_one_or_none()
+        if row is None:
+            raise RuntimeError("customer not found")
+        row.privacy_mode = privacy_mode
+        await session.commit()
+        await session.refresh(row)
+        return row.to_dict()
+
+
+async def merge_customers(keep_id: int, remove_id: int) -> dict:
+    """Merge remove_id into keep_id: copy missing identities, reassign attestations, delete remove."""
+    if _session_factory is None:
+        raise RuntimeError("DB not initialized")
+    async with get_session() as session:
+        keep = (await session.execute(select(Customer).where(Customer.id == keep_id))).scalar_one_or_none()
+        remove = (await session.execute(select(Customer).where(Customer.id == remove_id))).scalar_one_or_none()
+        if not keep or not remove:
+            raise RuntimeError("customer not found")
+
+        # Copy missing identities from remove → keep
+        # Clear from remove first to avoid unique constraint violations
+        if not keep.email and remove.email:
+            keep.email = remove.email
+            remove.email = None
+        if not keep.wallet_pubkey and remove.wallet_pubkey:
+            keep.wallet_pubkey = remove.wallet_pubkey
+            remove.wallet_pubkey = None
+
+        # Flush the clears so the unique columns are free before delete
+        await session.flush()
+
+        # Reassign attestations submitted by the removed account's API key
+        await session.execute(
+            text("UPDATE attestations SET submitted_by = :new_key WHERE submitted_by = :old_key"),
+            {"new_key": keep.api_key, "old_key": remove.api_key},
+        )
+
+        # Delete the removed account
+        await session.delete(remove)
+        await session.commit()
+        await session.refresh(keep)
+        return keep.to_dict()
 
 
 # ── Similarity search functions ───────────────────────────────────

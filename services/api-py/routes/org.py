@@ -77,22 +77,24 @@ class CreateKeyRequest(BaseModel):
 
 # ── Blocked domains ──────────────────────────────────────────────────
 
-BLOCKED_DOMAINS = {
-    # Freemail
-    "gmail.com", "googlemail.com", "yahoo.com", "yahoo.co.uk",
-    "hotmail.com", "outlook.com", "live.com", "msn.com",
-    "aol.com", "icloud.com", "me.com", "mac.com",
-    "protonmail.com", "proton.me", "mail.com", "zoho.com",
-    "yandex.com", "yandex.ru", "gmx.com", "gmx.net",
-    "tutanota.com", "tuta.com", "fastmail.com",
-    # Temp/disposable
-    "mailinator.com", "guerrillamail.com", "tempmail.com",
-    "throwaway.email", "sharklasers.com", "guerrillamailblock.com",
-    "grr.la", "dispostable.com", "yopmail.com", "10minutemail.com",
-    # Major platforms (not org domains)
-    "facebook.com", "twitter.com", "instagram.com", "tiktok.com",
-    "amazon.com", "apple.com", "microsoft.com", "google.com",
-}
+# TODO: re-enable for production
+BLOCKED_DOMAINS: set[str] = set()
+# BLOCKED_DOMAINS = {
+#     # Freemail
+#     "gmail.com", "googlemail.com", "yahoo.com", "yahoo.co.uk",
+#     "hotmail.com", "outlook.com", "live.com", "msn.com",
+#     "aol.com", "icloud.com", "me.com", "mac.com",
+#     "protonmail.com", "proton.me", "mail.com", "zoho.com",
+#     "yandex.com", "yandex.ru", "gmx.com", "gmx.net",
+#     "tutanota.com", "tuta.com", "fastmail.com",
+#     # Temp/disposable
+#     "mailinator.com", "guerrillamail.com", "tempmail.com",
+#     "throwaway.email", "sharklasers.com", "guerrillamailblock.com",
+#     "grr.la", "dispostable.com", "yopmail.com", "10minutemail.com",
+#     # Major platforms (not org domains)
+#     "facebook.com", "twitter.com", "instagram.com", "tiktok.com",
+#     "amazon.com", "apple.com", "microsoft.com", "google.com",
+# }
 
 
 # ── POST /api/org/register ──────────────────────────────────────────
@@ -106,8 +108,60 @@ async def register(req: RegisterRequest):
         raise HTTPException(400, f"{domain} is a public email provider and cannot be registered as an organization")
 
     existing = await db.get_organization_by_domain(domain)
+
+    # Already verified — allow re-auth via email to get a new admin key
     if existing and existing["verified"]:
-        raise HTTPException(409, "domain already registered and verified")
+        if req.method != "email":
+            raise HTTPException(400, "domain already verified — use email verification to log in")
+        if not req.admin_email or "@" not in req.admin_email:
+            raise HTTPException(400, "admin_email required to log in to existing org")
+        email_domain = req.admin_email.split("@", 1)[1].lower()
+        if email_domain != domain:
+            raise HTTPException(400, f"email must be @{domain}")
+
+        code = _generate_code()
+        _clean_expired()
+        _email_codes[req.admin_email.lower()] = EmailCode(
+            domain=domain,
+            email=req.admin_email.lower(),
+            code=code,
+        )
+
+        settings = Settings()
+        resp = {
+            "status": "pending",
+            "method": "email",
+            "domain": domain,
+            "email": req.admin_email,
+            "existing": True,
+        }
+
+        if settings.smtp_host:
+            html_body = f"""<!DOCTYPE html>
+<html><head><meta charset="utf-8"></head>
+<body style="font-family:system-ui,sans-serif;background:#0a0a0f;color:#e5e5e5;margin:0;padding:40px;">
+<div style="max-width:480px;margin:0 auto;background:#1a1a2e;border:1px solid #2d2d44;border-radius:12px;padding:40px;text-align:center;">
+<h1 style="color:#facc15;margin:0 0 8px;font-size:24px;">R3L Provenance</h1>
+<p style="color:#9ca3af;margin:0 0 24px;">Log in to your organization.</p>
+<p style="color:#e5e5e5;margin:0 0 8px;">Your verification code:</p>
+<p style="font-size:36px;font-weight:700;color:#facc15;letter-spacing:8px;margin:0 0 24px;">{code}</p>
+<p style="color:#6b7280;font-size:12px;margin:0;">This code expires in 30 minutes.</p>
+</div>
+</body></html>"""
+            from_addr = settings.smtp_from or settings.smtp_user
+            msg = MIMEText(html_body, "html")
+            msg["Subject"] = "R3L \u2014 Organization login code"
+            msg["From"] = from_addr
+            msg["To"] = req.admin_email
+
+            try:
+                await asyncio.to_thread(_send_email, settings, msg)
+            except Exception as e:
+                raise HTTPException(500, f"failed to send email: {e}")
+        else:
+            resp["dev_code"] = code
+
+        return resp
 
     if req.method == "dns":
         dns_token = "r3l-verify=" + secrets.token_hex(16)

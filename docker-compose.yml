@@ -27,8 +27,11 @@ services:
       SOLANA_KEYPAIR_PATH: /keys/id.json
       PROGRAM_ID: ${PROGRAM_ID:-kK63ncGUJXCWjUqSYzcN92tW531rt4UtacJBmHWXJ16}
       DATABASE_URL: postgresql://postgres:postgres@postgres:5432/r3l
+      STORAGE_BACKEND: local
+      STORAGE_DIR: /data/storage
     volumes:
       - ~/.config/solana:/keys:ro
+      - ./data/storage:/data/storage
 
   # ---- standalone tools ----
 
@@ -40,18 +43,5 @@ services:
       - ./data:/data:ro
     # Run with: docker compose run --rm verifier /data/samples/chatgpt.png
 
-  verifier-dev:
-    build:
-      context: .
-      dockerfile: docker/dev.Dockerfile
-    working_dir: /workspace/services/verifier
-    environment:
-      TRUST_DIR: /workspace/data/trust
-    volumes:
-      - ./:/workspace
-      - verifier-target:/workspace/services/verifier/target
-    command: bash -c "cargo run -- ../../data/samples/a.png"
-
 volumes:
   pgdata:
-  verifier-target:

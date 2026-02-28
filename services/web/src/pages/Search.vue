@@ -2,7 +2,7 @@
 import { ref, computed, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import type { AttestationResponse, AttestationListItem, SimilarResponse } from '../types'
-import { lookupAttestation, listAttestations, queryVerdict, searchSimilarByFile, searchSimilarByHash } from '../api'
+import { lookupAttestation, listAttestations, queryVerdict, searchSimilarByFile, searchSimilarByHash, getContentUrl } from '../api'
 
 const route = useRoute()
 const router = useRouter()
@@ -234,6 +234,20 @@ const matchConfig: Record<string, { label: string; color: string; border: string
   unrelated: { label: 'Unrelated', color: 'text-gray-400', border: 'border-gray-700', bg: 'bg-gray-900' },
 }
 
+// --- Content type config ---
+const defaultBadge = { label: 'File', color: 'text-gray-300', bg: 'bg-gray-800' }
+
+function contentTypeBadge(ct?: string): { label: string; color: string; bg: string } {
+  if (ct === 'url') return { label: 'URL', color: 'text-cyan-400', bg: 'bg-cyan-950' }
+  if (ct === 'text') return { label: 'Text', color: 'text-amber-400', bg: 'bg-amber-950' }
+  return defaultBadge
+}
+
+// --- Stored content preview check ---
+function isPreviewableImage(att: any): boolean {
+  return att?.stored && att?.mime_type?.startsWith('image/')
+}
+
 // --- Are we showing detail view? ---
 const showingDetail = computed(() => !!attestation.value)
 </script>
@@ -308,37 +322,76 @@ const showingDetail = computed(() => !!attestation.value)
     <div v-if="attestation && signerConfig" class="space-y-4">
       <!-- Verdict banner -->
       <div v-if="verdictConfig" :class="['rounded-lg border p-4 flex items-center justify-between', verdictConfig.bg, verdictConfig.border]">
-        <div class="flex items-center gap-3">
-          <span :class="['text-2xl font-bold tracking-wide', verdictConfig.color]">{{ verdictConfig.label }}</span>
-          <span class="text-xs text-gray-500">{{ attestation.proof_type === 'zk_groth16' ? 'ZK Groth16 Proof' : 'Trusted Verifier' }}</span>
+        <div>
+          <span class="text-xs text-gray-500 uppercase tracking-wider">Verdict</span>
+          <div class="flex items-center gap-3 mt-1">
+            <span :class="['text-2xl font-bold tracking-wide', verdictConfig.color]">{{ verdictConfig.label }}</span>
+            <span class="text-xs text-gray-500 bg-gray-800/60 px-2 py-0.5 rounded">{{ attestation.proof_type === 'zk_groth16' ? 'ZK Proof' : 'Verified by R3L' }}</span>
+          </div>
         </div>
-        <div class="flex items-center gap-4 text-xs text-gray-500">
-          <span v-if="verdict?.identity?.wallet_verified_onchain" class="text-purple-400">Wallet verified on-chain</span>
-          <span v-if="verdict?.c2pa?.present" class="text-green-400">C2PA present</span>
+        <div class="flex items-center gap-4 text-xs">
+          <span v-if="attestation.has_c2pa" class="text-green-400">C2PA</span>
+          <span v-if="verdict?.identity?.wallet_verified_onchain" class="text-purple-400">Wallet on-chain</span>
         </div>
       </div>
 
-      <div :class="['rounded-lg border p-4', signerConfig.bg]">
-        <span :class="['text-base font-semibold', signerConfig.color]">{{ signerConfig.label }}</span>
-        <p v-if="signerConfig.desc" class="text-sm text-gray-400 mt-1">{{ signerConfig.desc }}</p>
+      <!-- Content hash hero -->
+      <div class="bg-gray-900 rounded-lg border border-gray-800 p-4">
+        <div class="flex items-center justify-between mb-2">
+          <span class="text-xs text-gray-500 uppercase tracking-wider">Content Hash</span>
+          <div class="flex items-center gap-2">
+            <span class="text-xs font-medium px-2 py-0.5 rounded" :class="[contentTypeBadge(attestation.content_type).color, contentTypeBadge(attestation.content_type).bg]">
+              {{ contentTypeBadge(attestation.content_type).label }}
+            </span>
+            <button @click="copyToClipboard(attestation.content_hash, 'hash')" class="text-gray-500 hover:text-gray-300 cursor-pointer">
+              <span v-if="copiedField === 'hash'" class="text-green-400 text-xs">Copied!</span>
+              <svg v-else xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                <rect x="9" y="9" width="13" height="13" rx="2" ry="2" /><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1" />
+              </svg>
+            </button>
+          </div>
+        </div>
+        <p class="text-sm font-mono text-gray-200 break-all">{{ attestation.content_hash }}</p>
+        <a v-if="attestation.source_url" :href="attestation.source_url" target="_blank" rel="noopener" class="text-xs text-blue-400 hover:text-blue-300 mt-2 inline-block truncate max-w-full">
+          {{ attestation.source_url }}
+        </a>
       </div>
 
-      <div v-if="sourceTypeLabel" class="bg-gray-900 rounded-lg border border-gray-800 p-4">
-        <span class="text-gray-400 text-sm">Source Type</span>
-        <p :class="['text-base font-medium mt-1', sourceTypeColor]">{{ sourceTypeLabel }}</p>
-        <p v-if="attestation.digital_source_type" class="text-xs text-gray-600 mt-1 break-all">{{ attestation.digital_source_type }}</p>
+      <!-- Image preview for stored images -->
+      <div v-if="isPreviewableImage(attestation)" class="bg-gray-900 rounded-lg border border-gray-800 p-4">
+        <img :src="getContentUrl(attestation.content_hash)" alt="Stored content" class="max-h-64 rounded mx-auto" />
       </div>
 
+      <!-- Details table -->
       <div class="bg-gray-900 rounded-lg border border-gray-800 divide-y divide-gray-800">
-        <div class="flex items-center px-4 py-3">
-          <span class="text-gray-400 w-44 shrink-0 text-sm">Content Hash</span>
-          <span class="text-sm font-mono text-gray-300 break-all flex-1">{{ attestation.content_hash }}</span>
-          <button @click="copyToClipboard(attestation.content_hash, 'hash')" class="shrink-0 ml-2 text-gray-500 hover:text-gray-300 cursor-pointer">
-            <span v-if="copiedField === 'hash'" class="text-green-400 text-xs">Copied</span>
-            <svg v-else xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-              <rect x="9" y="9" width="13" height="13" rx="2" ry="2" /><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1" />
-            </svg>
-          </button>
+        <div class="flex px-4 py-3">
+          <span class="text-gray-400 w-44 shrink-0 text-sm">Timestamp</span>
+          <span class="text-sm text-gray-100">{{ new Date(attestation.timestamp * 1000).toISOString() }}</span>
+        </div>
+        <div class="flex px-4 py-3">
+          <span class="text-gray-400 w-44 shrink-0 text-sm">Submitted By</span>
+          <span class="text-sm font-mono text-gray-300 break-all">{{ attestation.submitted_by }}</span>
+        </div>
+        <div v-if="attestation.email_domain" class="flex px-4 py-3">
+          <span class="text-gray-400 w-44 shrink-0 text-sm">Email Domain</span>
+          <span class="text-sm text-yellow-400 font-medium">{{ attestation.email_domain }}</span>
+        </div>
+        <div v-if="attestation.wallet_pubkey" class="flex px-4 py-3">
+          <span class="text-gray-400 w-44 shrink-0 text-sm">Wallet</span>
+          <div class="flex-1">
+            <span class="text-sm font-mono text-purple-400 break-all">{{ attestation.wallet_pubkey }}</span>
+            <span v-if="attestation.wallet_sig" class="ml-2 text-xs text-green-400">Verified on-chain</span>
+          </div>
+        </div>
+
+        <!-- C2PA section (only if present) -->
+        <div v-if="attestation.has_c2pa" class="flex px-4 py-3">
+          <span class="text-gray-400 w-44 shrink-0 text-sm">C2PA Signer</span>
+          <span :class="['text-sm font-medium', signerConfig.color]">{{ signerConfig.label }}</span>
+        </div>
+        <div v-if="sourceTypeLabel" class="flex px-4 py-3">
+          <span class="text-gray-400 w-44 shrink-0 text-sm">Source Type</span>
+          <span :class="['text-sm', sourceTypeColor]">{{ sourceTypeLabel }}</span>
         </div>
         <div v-if="attestation.issuer" class="flex px-4 py-3">
           <span class="text-gray-400 w-44 shrink-0 text-sm">Issuer</span>
@@ -356,25 +409,7 @@ const showingDetail = computed(() => !!attestation.value)
           <span class="text-gray-400 w-44 shrink-0 text-sm">Signing Time</span>
           <span class="text-sm text-gray-100">{{ attestation.signing_time }}</span>
         </div>
-        <div v-if="attestation.email_domain" class="flex px-4 py-3">
-          <span class="text-gray-400 w-44 shrink-0 text-sm">Email Domain</span>
-          <span class="text-sm text-yellow-400 font-medium">{{ attestation.email_domain }}</span>
-        </div>
-        <div v-if="attestation.wallet_pubkey" class="flex px-4 py-3">
-          <span class="text-gray-400 w-44 shrink-0 text-sm">Wallet</span>
-          <div class="flex-1">
-            <span class="text-sm font-mono text-purple-400 break-all">{{ attestation.wallet_pubkey }}</span>
-            <span v-if="attestation.wallet_sig" class="ml-2 text-xs text-green-400">Signature verified on-chain</span>
-          </div>
-        </div>
-        <div class="flex px-4 py-3">
-          <span class="text-gray-400 w-44 shrink-0 text-sm">Submitted By</span>
-          <span class="text-sm font-mono text-gray-300 break-all">{{ attestation.submitted_by }}</span>
-        </div>
-        <div class="flex px-4 py-3">
-          <span class="text-gray-400 w-44 shrink-0 text-sm">Timestamp</span>
-          <span class="text-sm text-gray-100">{{ new Date(attestation.timestamp * 1000).toISOString() }}</span>
-        </div>
+
         <div v-if="attestation.verifier_version" class="flex px-4 py-3">
           <span class="text-gray-400 w-44 shrink-0 text-sm">Verifier Version</span>
           <span class="text-sm text-gray-300">{{ attestation.verifier_version }}</span>
@@ -420,6 +455,9 @@ const showingDetail = computed(() => !!attestation.value)
                   class="text-xs font-medium px-2 py-0.5 rounded"
                   :class="[matchConfig[match.match_type]?.color, matchConfig[match.match_type]?.bg]"
                 >{{ matchConfig[match.match_type]?.label }}</span>
+                <span v-if="match.content_type && match.content_type !== 'file'" class="text-xs font-medium px-1.5 py-0.5 rounded" :class="[contentTypeBadge(match.content_type).color, contentTypeBadge(match.content_type).bg]">
+                  {{ contentTypeBadge(match.content_type).label }}
+                </span>
                 <span class="text-xs text-gray-500 font-mono truncate">{{ truncHash(match.content_hash) }}</span>
               </div>
               <div v-if="match.tlsh_hash" class="text-xs text-gray-600 font-mono mb-1 truncate">
@@ -470,12 +508,16 @@ const showingDetail = computed(() => !!attestation.value)
         >
           <div class="flex-1 min-w-0">
             <div class="flex items-center gap-2">
+              <span class="text-xs font-medium px-1.5 py-0.5 rounded" :class="[contentTypeBadge(item.content_type).color, contentTypeBadge(item.content_type).bg]">
+                {{ contentTypeBadge(item.content_type).label }}
+              </span>
               <span class="text-sm font-mono text-gray-300">{{ truncHash(item.content_hash) }}</span>
               <span v-if="item.email_domain" class="text-xs text-yellow-400">{{ item.email_domain }}</span>
               <span v-if="item.wallet_pubkey" class="text-xs text-purple-400 font-mono">{{ item.wallet_pubkey.slice(0, 4) }}...{{ item.wallet_pubkey.slice(-4) }}</span>
             </div>
             <div class="text-xs text-gray-500 mt-0.5">
-              <span v-if="item.issuer">{{ item.issuer }}</span>
+              <span v-if="item.source_url" class="truncate max-w-xs inline-block align-middle">{{ item.source_url }}</span>
+              <span v-else-if="item.issuer">{{ item.issuer }}</span>
               <span v-else-if="item.trust_list_match">{{ item.trust_list_match }}</span>
               <span v-else>{{ item.proof_type }}</span>
             </div>

@@ -71,7 +71,7 @@ const signerConfig = computed(() => {
       label: 'No C2PA',
       color: 'text-gray-400',
       borderColor: 'border-gray-700',
-      desc: 'No C2PA provenance metadata found in this file.',
+      desc: 'No embedded C2PA metadata found in this file.',
     },
   }
   return configs[signerStatus.value]
@@ -165,7 +165,7 @@ function onSubmitted(sig: string, pda: string) {
 
 <template>
   <div class="space-y-6">
-    <!-- Single provenance report card -->
+    <!-- Verification report card -->
     <div :class="['bg-gray-900 rounded-lg border overflow-hidden', signerConfig.borderColor]">
       <!-- Header -->
       <div class="px-4 py-3 border-b border-gray-800">

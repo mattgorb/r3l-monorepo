@@ -15,6 +15,13 @@ variable "aws_region"     { default = "us-east-1" }
 variable "solana_rpc_url" { default = "https://api.devnet.solana.com" }
 variable "db_password"    { sensitive = true }
 variable "program_id"     { default = "63jq6M3t5NafYWcADqLDCLnhd5qPfEmCUcaA9iWh5YWz" }
+variable "smtp_host"      { default = "" }
+variable "smtp_user"      { default = "" }
+variable "smtp_pass" {
+  default   = ""
+  sensitive = true
+}
+variable "smtp_from"      { default = "" }
 
 provider "aws" {
   region = var.aws_region
@@ -233,6 +240,37 @@ resource "aws_iam_role_policy_attachment" "apprunner_ecr" {
 }
 
 ############################
+# S3: Content Storage
+############################
+resource "aws_s3_bucket" "content" {
+  bucket_prefix = "r3l-content-"
+  force_destroy = true
+  tags          = { Project = "r3l" }
+}
+
+resource "aws_s3_bucket_lifecycle_configuration" "content" {
+  bucket = aws_s3_bucket.content.id
+
+  rule {
+    id     = "transition-to-ia"
+    status = "Enabled"
+
+    transition {
+      days          = 30
+      storage_class = "STANDARD_IA"
+    }
+  }
+}
+
+resource "aws_s3_bucket_public_access_block" "content" {
+  bucket                  = aws_s3_bucket.content.id
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+############################
 # IAM: App Runner instance role
 ############################
 resource "aws_iam_role" "apprunner_instance" {
@@ -243,6 +281,22 @@ resource "aws_iam_role" "apprunner_instance" {
       Action    = "sts:AssumeRole"
       Effect    = "Allow"
       Principal = { Service = "tasks.apprunner.amazonaws.com" }
+    }]
+  })
+}
+
+resource "aws_iam_role_policy" "apprunner_s3" {
+  name = "r3l-content-s3-access"
+  role = aws_iam_role.apprunner_instance.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject", "s3:ListBucket"]
+      Resource = [
+        aws_s3_bucket.content.arn,
+        "${aws_s3_bucket.content.arn}/*",
+      ]
     }]
   })
 }
@@ -287,7 +341,14 @@ resource "aws_apprunner_service" "r3l_app" {
           STATIC_DIR     = "/app/static"
           SOLANA_RPC_URL = var.solana_rpc_url
           PROGRAM_ID     = var.program_id
-          DATABASE_URL   = "postgresql://${aws_db_instance.postgres.username}:${var.db_password}@${aws_db_instance.postgres.endpoint}/${aws_db_instance.postgres.db_name}"
+          DATABASE_URL      = "postgresql://${aws_db_instance.postgres.username}:${var.db_password}@${aws_db_instance.postgres.endpoint}/${aws_db_instance.postgres.db_name}"
+          STORAGE_BACKEND   = "s3"
+          S3_BUCKET         = aws_s3_bucket.content.id
+          S3_PREFIX         = "content/"
+          SMTP_HOST         = var.smtp_host
+          SMTP_USER         = var.smtp_user
+          SMTP_PASS         = var.smtp_pass
+          SMTP_FROM         = var.smtp_from
         }
       }
       image_identifier      = "${aws_ecr_repository.r3l_app.repository_url}:latest"

@@ -34,12 +34,16 @@ export interface SubmitResponse {
 
 export interface AttestResponse {
   signature: string | null
-  attestation_pda: string
+  attestation_pda: string | null
   content_hash: string
   verify_output: VerifyOutput
   existing?: boolean
+  private?: boolean
   email_domain?: string
   wallet_pubkey?: string
+  content_type?: 'file' | 'url' | 'text'
+  source_url?: string
+  stored?: boolean
 }
 
 export interface AttestationResponse {
@@ -60,6 +64,11 @@ export interface AttestationResponse {
   wallet_sig?: string
   verifier_version?: string
   trust_bundle_hash?: string
+  content_type?: 'file' | 'url' | 'text'
+  source_url?: string
+  mime_type?: string
+  content_size?: number
+  stored?: boolean
 }
 
 export interface AttestationListItem {
@@ -70,6 +79,9 @@ export interface AttestationListItem {
   trust_list_match?: string
   email_domain?: string
   wallet_pubkey?: string
+  content_type?: 'file' | 'url' | 'text'
+  source_url?: string
+  stored?: boolean
 }
 
 export interface SimilarMatch {
@@ -82,6 +94,7 @@ export interface SimilarMatch {
   trust_list_match?: string | null
   has_c2pa?: boolean | null
   timestamp: number
+  content_type?: 'file' | 'url' | 'text'
 }
 
 export interface SimilarResponse {
@@ -97,6 +110,7 @@ export interface MeResponse {
   email?: string | null
   wallet_pubkey?: string | null
   auth_method?: 'email' | 'wallet' | null
+  privacy_mode?: boolean
   // Org fields
   org?: OrgInfo['org']
   dids?: Record<string, string>

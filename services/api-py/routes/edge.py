@@ -38,6 +38,10 @@ class EdgeAttestRequest(BaseModel):
     wallet_signature: str = ""  # base58 Ed25519 sig for on-chain verification
     tlsh_hash: str = ""         # edge-computed TLSH hash
     clip_embedding: list[float] = []  # edge-computed CLIP embedding (512-dim)
+    content_type: str = "file"  # "file" | "url" | "text"
+    source_url: str = ""        # original URL for url-type attestations
+    mime_type: str = ""         # MIME type of the content
+    content_size: int = 0       # size in bytes
 
 
 class RegisterRequest(BaseModel):
@@ -128,6 +132,11 @@ async def edge_attest(req: EdgeAttestRequest, customer: dict = Depends(require_a
         wallet_pubkey = customer_wallet
         ed25519_ix = create_ed25519_instruction(pk_bytes, sig_bytes, wallet_message.encode())
 
+    # Privacy mode: keep identity in Postgres but zero it out for Solana
+    if customer.get("privacy_mode", False):
+        wallet_bytes = b"\x00" * 32
+        ed25519_ix = None
+
     # 4. Compute versioning
     trust_hash = compute_trust_bundle_hash(settings.trust_dir)
 
@@ -187,6 +196,10 @@ async def edge_attest(req: EdgeAttestRequest, customer: dict = Depends(require_a
         clip_embedding=req.clip_embedding or None,
         org_id=org_id,
         org_domain=org_domain,
+        content_type=req.content_type,
+        source_url=req.source_url or None,
+        mime_type=req.mime_type or None,
+        content_size=req.content_size or None,
     )
 
     result = {

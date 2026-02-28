@@ -14,9 +14,10 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from config import Settings
-from routes import verify, attest, prove, submit, attestation, edge, query, similar, org, did_route, auth_routes
+from routes import verify, attest, prove, submit, attestation, edge, query, similar, org, did_route, auth_routes, content, developer
 import db
 from similarity import init_similarity
+from storage import init_storage
 
 settings = Settings()
 app = FastAPI()
@@ -25,6 +26,7 @@ app = FastAPI()
 @app.on_event("startup")
 async def startup():
     await db.init_db(settings.database_url)
+    init_storage(settings)
     # Load CLIP model in background so health checks pass immediately
     threading.Thread(target=init_similarity, daemon=True).start()
 
@@ -47,6 +49,18 @@ async def health():
     return "ok"
 
 
+@app.post("/api/admin/reset-db")
+async def reset_db():
+    """Drop and recreate all tables. Dev/staging only."""
+    from sqlalchemy import text
+    from models import Base
+    async with db._engine.begin() as conn:
+        await conn.execute(text("DROP TABLE IF EXISTS attestations, customers, organizations, org_api_keys CASCADE"))
+        await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+        await conn.run_sync(Base.metadata.create_all)
+    return {"status": "ok", "message": "All tables dropped and recreated"}
+
+
 # API routes
 app.include_router(verify.router, prefix="/api")
 app.include_router(attest.router, prefix="/api")
@@ -59,6 +73,8 @@ app.include_router(query.router, prefix="/api")
 app.include_router(similar.router, prefix="/api/v1/similar")
 app.include_router(org.router, prefix="/api/org")
 app.include_router(did_route.router, prefix="/api")
+app.include_router(content.router, prefix="/api")
+app.include_router(developer.router, prefix="/api/v1")
 
 # .well-known DID document (must be before SPA fallback)
 from routes.did_route import platform_did

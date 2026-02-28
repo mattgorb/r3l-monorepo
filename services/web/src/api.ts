@@ -35,6 +35,8 @@ export async function attestFile(
     walletPubkey?: string
     walletMessage?: string
     walletSignature?: string
+    apiKey?: string
+    privateMode?: boolean
   },
 ): Promise<AttestResponse> {
   const form = new FormData()
@@ -42,7 +44,10 @@ export async function attestFile(
   if (opts?.walletPubkey) form.append('wallet_pubkey', opts.walletPubkey)
   if (opts?.walletMessage) form.append('wallet_message', opts.walletMessage)
   if (opts?.walletSignature) form.append('wallet_signature', opts.walletSignature)
-  const { data } = await client.post<AttestResponse>('/attest', form)
+  if (opts?.privateMode) form.append('private_mode', 'true')
+  const headers: Record<string, string> = {}
+  if (opts?.apiKey) headers['X-API-Key'] = opts.apiKey
+  const { data } = await client.post<AttestResponse>('/attest', form, { headers })
   return data
 }
 
@@ -99,6 +104,13 @@ export async function authWalletVerify(params: {
 
 export async function getMe(apiKey: string): Promise<MeResponse> {
   const { data } = await client.get<MeResponse>('/auth/me', {
+    headers: { 'X-API-Key': apiKey },
+  })
+  return data
+}
+
+export async function updatePrivacyMode(apiKey: string, privacyMode: boolean): Promise<{ privacy_mode: boolean }> {
+  const { data } = await client.patch<{ privacy_mode: boolean }>('/auth/me/privacy', { privacy_mode: privacyMode }, {
     headers: { 'X-API-Key': apiKey },
   })
   return data
@@ -186,5 +198,31 @@ export async function revokeOrgKey(apiKey: string, keyId: number): Promise<any> 
 export async function resolveDid(did: string): Promise<any> {
   const { data } = await client.get(`/did/${encodeURIComponent(did)}`)
   return data
+}
+
+// ── Content type attestation ────────────────────────────────────
+
+export async function attestUrl(url: string, storeContent: boolean = true, apiKey?: string, fetchHeaders?: Record<string, string>, privateMode?: boolean): Promise<AttestResponse> {
+  const reqHeaders: Record<string, string> = {}
+  if (apiKey) reqHeaders['X-API-Key'] = apiKey
+  const body: Record<string, any> = { url, store_content: storeContent }
+  if (fetchHeaders && Object.keys(fetchHeaders).length > 0) body.headers = fetchHeaders
+  if (privateMode) body.private_mode = true
+  const { data } = await client.post<AttestResponse>('/attest/url', body, { headers: reqHeaders })
+  return data
+}
+
+export async function attestText(text: string, title?: string, storeContent: boolean = true, apiKey?: string, privateMode?: boolean): Promise<AttestResponse> {
+  const body: Record<string, any> = { text, store_content: storeContent }
+  if (title) body.title = title
+  if (privateMode) body.private_mode = true
+  const headers: Record<string, string> = {}
+  if (apiKey) headers['X-API-Key'] = apiKey
+  const { data } = await client.post<AttestResponse>('/attest/text', body, { headers })
+  return data
+}
+
+export function getContentUrl(hash: string): string {
+  return `/api/content/${hash}`
 }
 

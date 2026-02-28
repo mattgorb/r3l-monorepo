@@ -42,10 +42,14 @@ COPY data/trust /data/trust
 # Solana keypair (copied by deploy.sh, optional for local builds)
 COPY docker/.solana-keypair.jso[n] /app/solana-keypair.json
 
+RUN mkdir -p /data/storage
+
 ENV TRUST_DIR=/data/trust
 ENV VERIFIER_BIN=/app/verifier
 ENV STATIC_DIR=/app/static
 ENV SOLANA_KEYPAIR_PATH=/app/solana-keypair.json
+ENV STORAGE_BACKEND=local
+ENV STORAGE_DIR=/data/storage
 
 EXPOSE 3001
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "3001"]
